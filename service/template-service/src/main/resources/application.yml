@@ -1,0 +1,12 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: template-service
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
