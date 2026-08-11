@@ -36,6 +36,14 @@ public class GlobalExceptionHandler {
         return badRequest("Request body is invalid or malformed", List.of(), exception);
     }
 
+    @ExceptionHandler(RedisUnavailableException.class)
+    public ResponseEntity<ProblemDetail> handleRedisUnavailable(RedisUnavailableException exception) {
+        LOGGER.error("REDIS_ERROR request_rejected");
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
+                "URL submission is temporarily unavailable");
+        problem.setTitle("Service unavailable");
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(problem);
+    }
     private ResponseEntity<ProblemDetail> badRequest(String detail, List<String> errors, Exception exception) {
         LOGGER.warn("Client request rejected: {}", exception.getMessage());
 
@@ -48,3 +56,4 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest().body(problem);
     }
 }
+

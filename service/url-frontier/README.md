@@ -156,3 +156,20 @@ Stop the container with `docker stop url-frontier`.
 2. Frontier-specific Micrometer counters and timers.
 3. Kafka events for crawler coordination after accepted URLs can be persisted atomically.
 4. Priority scheduling and crawl politeness controls.
+
+## Feature 5: Redis URL Deduplication
+
+Flow: `Client -> UrlController -> UrlFrontierService -> UrlNormalizer -> Sha256UrlHasher -> VisitedUrlRepository -> Redis -> Response`.
+
+Redis stores `visited:{urlHash}`, for example `visited:007f61681d94a000cdbe12b4e4bf3ec8ff126d8cb79179a01a79be2caa410b28`. The value is the ISO-8601 UTC discovery timestamp, such as `2026-08-09T18:00:00Z`; the URL itself is never stored. The repository performs an atomic equivalent of `SET key value NX EX 604800`, creating a seven-day deduplication window. Duplicates return `409 Conflict` and never overwrite the timestamp or refresh TTL. Redis errors fail closed with `503 Service Unavailable`; no Kafka action occurs.
+
+Start the existing shared Redis service from `infrastructure/docker`:
+
+```bash
+docker compose up -d redis
+docker ps
+docker logs redis
+docker compose stop redis
+```
+
+Tests mock Redis; no Testcontainers or live-Redis integration test is included yet.

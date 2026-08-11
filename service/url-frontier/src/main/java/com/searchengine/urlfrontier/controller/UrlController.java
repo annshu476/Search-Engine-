@@ -26,6 +26,7 @@ public class UrlController {
     @PostMapping
     public ResponseEntity<SubmitUrlResponse> submit(@Valid @RequestBody SubmitUrlRequest request) {
         SubmitUrlResponse response = urlFrontierService.submit(request);
-        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
+        return ResponseEntity.status(response.accepted() ? HttpStatus.ACCEPTED : HttpStatus.CONFLICT).body(response);
     }
 }
+

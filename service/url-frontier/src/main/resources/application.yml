@@ -5,6 +5,10 @@ server:
 spring:
   application:
     name: url-frontier
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
   lifecycle:
     timeout-per-shutdown-phase: 20s
 
@@ -41,3 +45,4 @@ info:
   application:
     name: ${spring.application.name}
     description: URL frontier service for the distributed search engine
+
