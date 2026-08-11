@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`url-frontier` manages the entry point for the crawl frontier in the distributed search engine. It currently validates, normalizes, and hashes URL submissions locally; it does not store, deduplicate, prioritize, or publish them.
+`url-frontier` is the entry point for crawl frontier submissions in the distributed search engine. It currently accepts URL submissions, validates them, normalizes them, hashes them, deduplicates them in Redis, and assigns an initial backend-managed crawl priority.
 
 ## Responsibilities
 
@@ -10,41 +10,39 @@
 - Accept valid HTTP and HTTPS URL submissions through a REST API.
 - Normalize submitted URLs without network access.
 - Generate a deterministic SHA-256 hash from each normalized URL.
-- Return the original URL, normalized URL, URL hash, and a UTC timestamp.
-- Convert common malformed or invalid HTTP requests into standard error responses.
+- Deduplicate normalized URLs in Redis for seven days.
+- Assign an initial crawl priority to newly accepted URLs.
+- Return the original URL, normalized URL, URL hash, assigned priority when applicable, and a UTC timestamp.
+- Convert malformed or invalid HTTP requests into standard error responses.
 
 ## Technologies Used
 
 - Java 21 and Spring Boot 3.5
 - Maven and the Maven Wrapper
 - Spring Web and Bean Validation
-- Spring for Apache Kafka and Spring Data Redis (dependencies only at this stage)
+- Spring Data Redis
+- Spring for Apache Kafka dependencies only
 - Spring Boot Actuator, Micrometer, and Prometheus registry
 - Lombok
 
 ## Package Structure
 
-```
+```text
 com.searchengine.urlfrontier
-├── config/       application configuration and typed properties
-├── controller/   HTTP endpoints
-├── hasher/       SHA-256 URL hash generation
-├── normalizer/   URL normalization
-├── service/      application use cases
-├── validator/    request validation
-├── exception/    common HTTP error handling
-├── repository/   future Redis adapters
-├── producer/     future Kafka publishers
-├── consumer/     future Kafka listeners
-├── metrics/      future custom Micrometer metrics
-├── util/         small shared utilities
-└── model/
-    ├── dto/      HTTP models
-    ├── kafka/    Kafka event models
-    └── redis/    Redis persistence models
+|- config/       application configuration and typed properties
+|- constant/     API path constants
+|- controller/   HTTP endpoints
+|- exception/    common HTTP error handling
+|- hasher/       SHA-256 URL hash generation
+|- model/        DTO, Kafka, and Redis models
+|- normalizer/   URL normalization
+|- priority/     URL priority assignment
+|- repository/   Redis-backed URL deduplication
+|- service/      application use cases
+`- validator/    request validation
 ```
 
-The `constant`, `controller`, `service`, `normalizer`, `hasher`, `validator`, `exception`, and `model/dto` packages contain the implemented URL submission flow. The remaining packages are intentionally empty placeholders for later features.
+Future-facing placeholder packages remain for Kafka consumers, producers, metrics, utilities, and transport models that are not implemented yet.
 
 ## API Documentation
 
@@ -68,38 +66,81 @@ Successful response: `202 Accepted`
   "originalUrl": " HTTPS://SPRING.IO/ ",
   "normalizedUrl": "https://spring.io",
   "urlHash": "007f61681d94a000cdbe12b4e4bf3ec8ff126d8cb79179a01a79be2caa410b28",
-  "message": "URL processed successfully",
+  "priority": 5,
+  "message": "URL accepted",
+  "timestamp": "2026-07-31T10:00:00Z"
+}
+```
+
+Duplicate response: `409 Conflict`
+
+```json
+{
+  "accepted": false,
+  "originalUrl": "https://spring.io",
+  "normalizedUrl": "https://spring.io",
+  "urlHash": "007f61681d94a000cdbe12b4e4bf3ec8ff126d8cb79179a01a79be2caa410b28",
+  "message": "URL has already been seen",
   "timestamp": "2026-07-31T10:00:00Z"
 }
 ```
 
 ## Completed Features
 
+- Feature 1: Project setup
+- Feature 2: URL ingestion API
 - Feature 3: URL normalization
 - Feature 4: SHA-256 URL hash generation
+- Feature 5: Redis URL deduplication
+- Feature 6: URL priority assignment
 
-## Feature 4: URL Hash Generation
-
-The request flow is:
+## URL Frontier Flow
 
 ```text
-Client -> UrlController -> UrlFrontierService -> UrlNormalizer -> Sha256UrlHasher -> Response
+Client
+  -> UrlController
+  -> UrlFrontierService
+  -> UrlNormalizer
+  -> Sha256UrlHasher
+  -> VisitedUrlRepository
+  -> UrlPriorityAssigner
+  -> Response
 ```
 
-`UrlNormalizer` and `Sha256UrlHasher` are pure local components. They do not make DNS lookups, contact the internet, resolve redirects, or interact with Redis or Kafka.
+## Feature 5: Redis URL Deduplication
 
-Normalization rules:
+Redis stores `visited:{urlHash}`, for example `visited:007f61681d94a000cdbe12b4e4bf3ec8ff126d8cb79179a01a79be2caa410b28`.
 
-- Trim leading and trailing whitespace.
-- Convert the scheme and host to lowercase.
-- Remove `/` only when it is the root path.
-- Preserve deeper paths, query parameters, and fragments.
+- Value: ISO-8601 UTC discovery timestamp
+- TTL: 7 days
+- Atomic write: `setIfAbsent(key, value, ttl)`
+- Duplicate behavior: return `409 Conflict`, do not overwrite timestamp, do not refresh TTL
 
-`Sha256UrlHasher` accepts the normalized URL, encodes it as UTF-8, and returns its lowercase hexadecimal SHA-256 digest. Hashing is performed after normalization so equivalent input URLs, such as `HTTPS://SPRING.IO/` and `https://spring.io`, receive the same hash.
+Redis does not store the URL body or the assigned priority.
 
-Hashing comes before Redis because Redis should eventually use this stable value as its deduplication key. Generating the key first keeps storage implementation-independent and allows a later Redis adapter to perform an atomic check-and-store without redefining URL identity. This feature only generates and returns the hash; it does not compare, store, or deduplicate hashes.
+## Feature 6: URL Priority Assignment
 
-Validation failures return `400 Bad Request` using Spring Problem Details. The `url` field is required, cannot be blank, and must be a valid HTTP or HTTPS URL.
+Priority assignment is intentionally simple in V1.
+
+- Allowed range: `1` to `10`
+- Default priority: `5`
+- Meaning: `1` is lowest priority and `10` is highest priority
+
+Only newly accepted URLs receive a priority. Duplicate URLs do not trigger a new priority assignment and keep the existing duplicate response behavior.
+
+Clients cannot choose priority. The request contract stays:
+
+```json
+{
+  "url": "https://spring.io"
+}
+```
+
+V1 uses a fixed priority because the service does not yet have enough information to rank URLs meaningfully. Future versions may use signals such as seed URLs, page importance, freshness, domain policies, link signals, and crawl frequency. That logic belongs in later features, so the current implementation isolates assignment in `UrlPriorityAssigner` without introducing premature strategy abstractions.
+
+## Validation Errors
+
+Validation failures return `400 Bad Request` using Spring Problem Details.
 
 ```json
 {
@@ -131,16 +172,16 @@ The service listens on `http://localhost:8080` by default.
 
 ## Docker Dependencies
 
-No Docker dependency is required for this feature. Kafka and Redis client libraries are present, but their health indicators are disabled until the corresponding integration is implemented.
-
-Build and run the service image:
+Start the shared Redis dependency from `infrastructure/docker`:
 
 ```bash
-docker build -t url-frontier:local .
-docker run --rm -p 8080:8080 --name url-frontier url-frontier:local
+docker compose up -d redis
+docker ps
+docker logs redis
+docker compose stop redis
 ```
 
-Stop the container with `docker stop url-frontier`.
+Kafka dependencies are present in the build only for future features. Kafka publishing is not implemented yet.
 
 ## Environment Variables
 
@@ -150,26 +191,28 @@ Stop the container with `docker stop url-frontier`.
 | `LOGGING_LEVEL_ROOT` | `INFO` | Root logging level. |
 | `LOGGING_LEVEL_APPLICATION` | `INFO` | Logging level for application classes. |
 
-## Roadmap
+## Testing
 
-1. Redis-backed deduplication and frontier storage using the existing URL hash as the key.
-2. Frontier-specific Micrometer counters and timers.
-3. Kafka events for crawler coordination after accepted URLs can be persisted atomically.
-4. Priority scheduling and crawl politeness controls.
+- Unit tests mock `VisitedUrlRepository`.
+- HTTP/application tests use mocked infrastructure for deterministic responses.
+- Redis integration tests are explicitly tagged as `integration`.
+- No Testcontainers are used.
 
-## Feature 5: Redis URL Deduplication
-
-Flow: `Client -> UrlController -> UrlFrontierService -> UrlNormalizer -> Sha256UrlHasher -> VisitedUrlRepository -> Redis -> Response`.
-
-Redis stores `visited:{urlHash}`, for example `visited:007f61681d94a000cdbe12b4e4bf3ec8ff126d8cb79179a01a79be2caa410b28`. The value is the ISO-8601 UTC discovery timestamp, such as `2026-08-09T18:00:00Z`; the URL itself is never stored. The repository performs an atomic equivalent of `SET key value NX EX 604800`, creating a seven-day deduplication window. Duplicates return `409 Conflict` and never overwrite the timestamp or refresh TTL. Redis errors fail closed with `503 Service Unavailable`; no Kafka action occurs.
-
-Start the existing shared Redis service from `infrastructure/docker`:
+Run the default test suite:
 
 ```bash
-docker compose up -d redis
-docker ps
-docker logs redis
-docker compose stop redis
+./mvnw test
 ```
 
-Tests mock Redis; no Testcontainers or live-Redis integration test is included yet.
+Run tagged Redis integration tests explicitly:
+
+```bash
+./mvnw -Predis-integration test
+```
+
+## Roadmap
+
+1. Frontier-specific Micrometer counters and timers.
+2. Kafka events for accepted crawl tasks after persistence remains atomic.
+3. Richer priority strategies based on crawl signals.
+4. Scheduling and crawl politeness controls.

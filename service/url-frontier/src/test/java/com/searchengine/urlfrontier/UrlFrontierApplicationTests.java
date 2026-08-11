@@ -53,6 +53,7 @@ class UrlFrontierApplicationTests {
                 .andExpect(jsonPath("$.originalUrl").value(" HTTPS://SPRING.IO/ "))
                 .andExpect(jsonPath("$.normalizedUrl").value("https://spring.io"))
                 .andExpect(jsonPath("$.urlHash").value("007f61681d94a000cdbe12b4e4bf3ec8ff126d8cb79179a01a79be2caa410b28"))
+                .andExpect(jsonPath("$.priority").value(5))
                 .andExpect(jsonPath("$.message").value("URL accepted"))
                 .andExpect(jsonPath("$.timestamp").isNotEmpty());
     }
@@ -66,6 +67,7 @@ class UrlFrontierApplicationTests {
                         .content("{\"url\":\"https://spring.io\"}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.accepted").value(false))
+                .andExpect(jsonPath("$.priority").doesNotExist())
                 .andExpect(jsonPath("$.message").value("URL has already been seen"));
     }
 
