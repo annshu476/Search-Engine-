@@ -32,10 +32,11 @@ public class CrawlerService {
         PageFetchResult result = pageFetcher.fetch(task.url()).block(FETCH_TIMEOUT);
 
         if (result == null || !result.success()) {
+            int statusCode = result != null ? result.statusCode() : 0;
             String failureReason = (result != null && result.failureReason() != null) ? result.failureReason() : "Unknown fetch failure";
-            LOGGER.error("PAGE_FETCH_FAILURE urlHash={} requestedUrl={} failureReason={}",
-                    task.urlHash(), task.url(), failureReason);
-            PageFetchResult failedResult = result != null ? result : PageFetchResult.failure(task.url(), task.url(), 0, null, failureReason, Instant.now());
+            LOGGER.error("PAGE_FETCH_FAILURE urlHash={} requestedUrl={} statusCode={} failureReason={}",
+                    task.urlHash(), task.url(), statusCode, failureReason);
+            PageFetchResult failedResult = result != null ? result : PageFetchResult.failure(task.url(), task.url(), statusCode, null, failureReason, Instant.now());
             throw new PageFetchException(failedResult);
         }
 

@@ -40,7 +40,7 @@ public class WebClientConfig {
                 .doOnConnected(conn -> conn
                         .addHandlerLast(new ReadTimeoutHandler(responseTimeout.toMillis(), TimeUnit.MILLISECONDS))
                         .addHandlerLast(new WriteTimeoutHandler(responseTimeout.toMillis(), TimeUnit.MILLISECONDS)))
-                .followRedirect(true)
+                .followRedirect((req, res) -> res.status().code() >= 300 && res.status().code() < 400 && res.redirectedFrom().length < maxRedirects)
                 .compress(true);
 
         ExchangeStrategies exchangeStrategies = ExchangeStrategies.builder()

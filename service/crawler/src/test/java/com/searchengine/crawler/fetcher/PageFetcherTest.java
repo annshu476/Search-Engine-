@@ -10,7 +10,11 @@ import okhttp3.mockwebserver.RecordedRequest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.WebClient;
+import reactor.netty.http.client.HttpClient;
 
 class PageFetcherTest {
 
@@ -21,8 +25,10 @@ class PageFetcherTest {
     void setUp() throws IOException {
         mockWebServer = new MockWebServer();
         mockWebServer.start();
-        WebClient webClient = WebClient.builder().build();
-        // Disable SSRF check during MockWebServer test calls so loopback calls to MockWebServer are permitted
+        HttpClient httpClient = HttpClient.create().followRedirect(true);
+        WebClient webClient = WebClient.builder()
+                .clientConnector(new ReactorClientHttpConnector(httpClient))
+                .build();
         pageFetcher = new PageFetcher(webClient, "SearchEngineBot/1.0", false);
     }
 
@@ -32,7 +38,7 @@ class PageFetcherTest {
     }
 
     @Test
-    void fetchesSuccessfulHtmlResponse() throws Exception {
+    void fetchesSuccessful200HtmlResponse() throws Exception {
         mockWebServer.enqueue(new MockResponse()
                 .setResponseCode(200)
                 .setHeader("Content-Type", "text/html; charset=utf-8")
@@ -55,13 +61,114 @@ class PageFetcherTest {
     }
 
     @Test
-    void rejectsUnsupportedContentType() {
+    void fetchesSuccessful201CreatedHtmlResponse() {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(201)
+                .setHeader("Content-Type", "text/html")
+                .setBody("<html>Created Page</html>"));
+
+        String url = mockWebServer.url("/created").toString();
+        PageFetchResult result = pageFetcher.fetch(url).block();
+
+        assertThat(result).isNotNull();
+        assertThat(result.success()).isTrue();
+        assertThat(result.statusCode()).isEqualTo(201);
+        assertThat(result.body()).isEqualTo("<html>Created Page</html>");
+    }
+
+    @Test
+    void rejects204NoContent() {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(204)
+                .setHeader("Content-Type", "text/html"));
+
+        String url = mockWebServer.url("/no-content").toString();
+        PageFetchResult result = pageFetcher.fetch(url).block();
+
+        assertThat(result).isNotNull();
+        assertThat(result.success()).isFalse();
+        assertThat(result.statusCode()).isEqualTo(204);
+        assertThat(result.failureReason()).contains("No content (204)");
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {301, 302, 307, 308})
+    void followsRedirectsToFinalUrl(int redirectCode) {
+        String targetPath = "/target-page";
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(redirectCode)
+                .setHeader("Location", targetPath));
         mockWebServer.enqueue(new MockResponse()
                 .setResponseCode(200)
-                .setHeader("Content-Type", "application/pdf")
-                .setBody("%PDF-1.4 dummy binary content"));
+                .setHeader("Content-Type", "text/html")
+                .setBody("<html>Final Destination</html>"));
 
-        String url = mockWebServer.url("/document.pdf").toString();
+        String initialUrl = mockWebServer.url("/redirect-start").toString();
+        PageFetchResult result = pageFetcher.fetch(initialUrl).block();
+
+        assertThat(result).isNotNull();
+        assertThat(result.success()).isTrue();
+        assertThat(result.statusCode()).isEqualTo(200);
+        assertThat(result.body()).isEqualTo("<html>Final Destination</html>");
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {400, 401, 403, 404, 410})
+    void handlesClientErrorStatuses(int statusCode) {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(statusCode)
+                .setHeader("Content-Type", "text/html")
+                .setBody("<html>Client Error</html>"));
+
+        String url = mockWebServer.url("/client-error").toString();
+        PageFetchResult result = pageFetcher.fetch(url).block();
+
+        assertThat(result).isNotNull();
+        assertThat(result.success()).isFalse();
+        assertThat(result.statusCode()).isEqualTo(statusCode);
+        assertThat(result.failureReason()).contains("HTTP status " + statusCode);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {500, 502, 503})
+    void handlesServerErrorStatuses(int statusCode) {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(statusCode)
+                .setHeader("Content-Type", "text/html")
+                .setBody("<html>Server Error</html>"));
+
+        String url = mockWebServer.url("/server-error").toString();
+        PageFetchResult result = pageFetcher.fetch(url).block();
+
+        assertThat(result).isNotNull();
+        assertThat(result.success()).isFalse();
+        assertThat(result.statusCode()).isEqualTo(statusCode);
+        assertThat(result.failureReason()).contains("HTTP status " + statusCode);
+    }
+
+    @Test
+    void rejectsMissingContentTypeHeader() {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setBody("<html>No Content Type Header</html>"));
+
+        String url = mockWebServer.url("/no-header").toString();
+        PageFetchResult result = pageFetcher.fetch(url).block();
+
+        assertThat(result).isNotNull();
+        assertThat(result.success()).isFalse();
+        assertThat(result.failureReason()).contains("Missing Content-Type header");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"application/pdf", "image/png", "video/mp4", "application/zip", "application/octet-stream"})
+    void rejectsUnsupportedContentTypes(String contentType) {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", contentType)
+                .setBody("binary content"));
+
+        String url = mockWebServer.url("/binary").toString();
         PageFetchResult result = pageFetcher.fetch(url).block();
 
         assertThat(result).isNotNull();
@@ -70,35 +177,35 @@ class PageFetcherTest {
     }
 
     @Test
-    void handles404NotFound() {
+    void acceptsHtmlWithCharsetParameters() {
         mockWebServer.enqueue(new MockResponse()
-                .setResponseCode(404)
-                .setHeader("Content-Type", "text/html")
-                .setBody("<html>404 Not Found</html>"));
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/html; charset=ISO-8859-1")
+                .setBody("<html><body>ISO Encoded Content</body></html>"));
 
-        String url = mockWebServer.url("/missing").toString();
+        String url = mockWebServer.url("/iso").toString();
         PageFetchResult result = pageFetcher.fetch(url).block();
 
         assertThat(result).isNotNull();
-        assertThat(result.success()).isFalse();
-        assertThat(result.statusCode()).isEqualTo(404);
-        assertThat(result.failureReason()).contains("HTTP status 404");
+        assertThat(result.success()).isTrue();
+        assertThat(result.statusCode()).isEqualTo(200);
+        assertThat(result.contentType()).contains("ISO-8859-1");
     }
 
-    @Test
-    void handles500ServerError() {
+    @ParameterizedTest
+    @ValueSource(strings = {"", "   ", "\n\t  "})
+    void rejectsEmptyOrWhitespaceOnlyBody(String emptyBody) {
         mockWebServer.enqueue(new MockResponse()
-                .setResponseCode(500)
+                .setResponseCode(200)
                 .setHeader("Content-Type", "text/html")
-                .setBody("<html>Internal Error</html>"));
+                .setBody(emptyBody));
 
-        String url = mockWebServer.url("/error").toString();
+        String url = mockWebServer.url("/empty").toString();
         PageFetchResult result = pageFetcher.fetch(url).block();
 
         assertThat(result).isNotNull();
         assertThat(result.success()).isFalse();
-        assertThat(result.statusCode()).isEqualTo(500);
-        assertThat(result.failureReason()).contains("HTTP status 500");
+        assertThat(result.failureReason()).contains("Empty HTML response");
     }
 
     @Test

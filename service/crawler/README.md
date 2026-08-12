@@ -18,19 +18,32 @@ Feature 2 implemented Kafka consumer support for consuming `UrlTask` messages fr
 
 ## Feature 3 Scope: HTTP Page Fetching
 
-Feature 3 implements non-blocking HTTP web page fetching using Spring WebClient (`PageFetcher`).
+Feature 3 implemented non-blocking HTTP web page fetching using Spring WebClient (`PageFetcher`).
 
-### Included in Feature 3
-- **PageFetcher Component**: Reactive fetcher component returning `Mono<PageFetchResult>`.
-- **Fetch Result DTO**: `PageFetchResult` containing `requestedUrl`, `finalUrl`, `statusCode`, `contentType`, `body`, `fetchedAt`, `success`, and `failureReason`.
-- **User-Agent Header**: Configurable `SearchEngineBot/1.0` (`crawler.http.user-agent`).
-- **Timeouts**: Connect timeout `5s` (`crawler.http.connect-timeout`), Response timeout `10s` (`crawler.http.response-timeout`).
-- **Redirects**: Auto-follows up to `5` HTTP redirects (`crawler.http.max-redirects`) and tracks `finalUrl`.
-- **Max Response Size**: Configurable `10MB` codec limit (`crawler.http.max-response-size`) to prevent JVM memory exhaustion.
-- **Content Type Filter**: Restricts processing to HTML (`text/html`, `application/xhtml+xml`). Unsupported binary/media formats (e.g. PDF, images) are rejected.
-- **SSRF Protection**: Host/IP validation rejecting loopback (`127.0.0.1`, `::1`), link-local (`169.254.x.x`), and private IP ranges (`10.x.x.x`, `172.16-31.x.x`, `192.168.x.x`).
-- **Kafka ACK Propagation**: HTTP fetch failures throw `PageFetchException` inside `CrawlerService`, preventing Kafka offset ACK for failed tasks.
-- **Offline Deterministic Testing**: Test suite using `MockWebServer` to test HTTP status codes, redirects, timeouts, content-type filtering, size limits, and SSRF blocking offline.
+---
+
+## Feature 4 Scope: HTTP Response Handling
+
+Feature 4 implements explicit HTTP response classification, content-type verification, empty-body checks, and redirect limit enforcement.
+
+### Included in Feature 4
+- **HTTP Status Rules**:
+  - `200 OK` / `201 Created` with valid non-blank HTML body -> `success = true`.
+  - `204 No Content` -> `success = false` (`failureReason="No content (204)"`).
+  - `3xx` redirects (301, 302, 303, 307, 308) -> Auto-followed up to `maxRedirects = 5`. Exceeding 5 redirects -> `success = false` (`failureReason="Redirect limit exceeded"`).
+  - `4xx` (400, 401, 403, 404, 410) & `5xx` (500, 502, 503) -> `success = false`, status code preserved in `PageFetchResult`.
+- **Content-Type Validation**:
+  - Accepts `text/html` and `application/xhtml+xml` (including charset parameters e.g., `text/html; charset=UTF-8`).
+  - Missing Content-Type or binary/media types (`application/pdf`, `image/png`, `video/mp4`, `application/zip`) -> `success = false`.
+- **Body Validation**:
+  - Null, empty (`""`), or whitespace-only (`"   "`) HTML bodies -> `success = false` (`failureReason="Empty HTML response"`).
+- **Redirect Limit Enforcement**:
+  - Netty `HttpClient` redirect predicate explicitly configured: `res.redirectedFrom().length < maxRedirects`.
+  - `finalUrl` accurately captures destination URL after redirects.
+- **Failure Representation & Kafka ACK**:
+  - Structured `PageFetchResult` generated for expected HTTP failure outcomes.
+  - `CrawlerService` logs `PAGE_FETCH_FAILURE` and propagates `PageFetchException` to prevent Kafka ACK for un-fetched URLs.
+- **Deterministic Testing**: Comprehensive test coverage in `PageFetcherTest` using `MockWebServer` testing 2xx, 204, 3xx redirects, 4xx/5xx status codes, missing/unsupported Content-Types, empty bodies, charsets, and SSRF blocking offline.
 
 ---
 
@@ -43,11 +56,11 @@ UrlTaskConsumer (Feature 2)
     ↓
 CrawlerService
     ↓
-PageFetcher (Feature 3)
+PageFetcher (Feature 3 & 4)
     ↓
-WebClient (Feature 3)
+WebClient (Feature 3 & 4)
     ↓
-HTTP Server
+HTTP Response Classification (Feature 4)
     ↓
 robots.txt Checker (Future)
     ↓
@@ -67,6 +80,7 @@ raw-html-topic (Future)
 ### Crawler Owns:
 - Consuming `UrlTask` messages from `url-topic`
 - Non-blocking HTTP page fetching using Spring WebClient
+- HTTP response classification, content-type filtering & size validation
 - `robots.txt` policy adherence (future)
 - Per-domain rate limiting (future)
 - HTTP error and retry handling (future)

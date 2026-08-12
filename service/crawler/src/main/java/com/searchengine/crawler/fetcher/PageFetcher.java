@@ -3,6 +3,7 @@ package com.searchengine.crawler.fetcher;
 import com.searchengine.crawler.model.dto.PageFetchResult;
 import java.net.InetAddress;
 import java.net.URI;
+import java.nio.charset.UnsupportedCharsetException;
 import java.time.Instant;
 import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
@@ -16,7 +17,7 @@ import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
 /**
- * Component responsible for performing HTTP GET requests to fetch web pages using WebClient.
+ * Component responsible for performing HTTP GET requests and classifying response outcomes.
  */
 @Component
 public class PageFetcher {
@@ -53,26 +54,42 @@ public class PageFetcher {
                 .header(HttpHeaders.USER_AGENT, userAgent)
                 .exchangeToMono(response -> {
                     int statusCode = response.statusCode().value();
+                    String finalUrl = (response.request() != null && response.request().getURI() != null)
+                            ? response.request().getURI().toString()
+                            : urlString;
                     String contentType = response.headers().contentType()
                             .map(MediaType::toString)
                             .orElse("");
 
-                    if (statusCode >= 300 && statusCode < 400) {
-                        String location = response.headers().header(HttpHeaders.LOCATION).stream().findFirst().orElse(urlString);
-                        return Mono.just(PageFetchResult.failure(urlString, location, statusCode, contentType, "Redirect limit exceeded or unhandled redirect", Instant.now()));
-                    }
-
-                    if (statusCode < 200 || statusCode >= 300) {
-                        return Mono.just(PageFetchResult.failure(urlString, urlString, statusCode, contentType, "HTTP status " + statusCode, Instant.now()));
+                    if (contentType.isBlank()) {
+                        return Mono.just(PageFetchResult.failure(urlString, finalUrl, statusCode, contentType, "Missing Content-Type header", Instant.now()));
                     }
 
                     if (!isSupportedHtmlContentType(contentType)) {
-                        return Mono.just(PageFetchResult.failure(urlString, urlString, statusCode, contentType, "Unsupported content-type: " + contentType, Instant.now()));
+                        return Mono.just(PageFetchResult.failure(urlString, finalUrl, statusCode, contentType, "Unsupported content-type: " + contentType, Instant.now()));
+                    }
+
+                    if (statusCode == 204) {
+                        return Mono.just(PageFetchResult.failure(urlString, finalUrl, 204, contentType, "No content (204)", Instant.now()));
+                    }
+
+                    if (statusCode >= 300 && statusCode < 400) {
+                        String location = response.headers().header(HttpHeaders.LOCATION).stream().findFirst().orElse(finalUrl);
+                        return Mono.just(PageFetchResult.failure(urlString, location, statusCode, contentType, "Redirect limit exceeded", Instant.now()));
+                    }
+
+                    if (statusCode < 200 || statusCode >= 300) {
+                        return Mono.just(PageFetchResult.failure(urlString, finalUrl, statusCode, contentType, "HTTP status " + statusCode, Instant.now()));
                     }
 
                     return response.bodyToMono(String.class)
-                            .map(body -> PageFetchResult.success(urlString, urlString, statusCode, contentType, body, Instant.now()))
-                            .defaultIfEmpty(PageFetchResult.success(urlString, urlString, statusCode, contentType, "", Instant.now()));
+                            .flatMap(body -> {
+                                if (body == null || body.isBlank()) {
+                                    return Mono.just(PageFetchResult.failure(urlString, finalUrl, statusCode, contentType, "Empty HTML response", Instant.now()));
+                                }
+                                return Mono.just(PageFetchResult.success(urlString, finalUrl, statusCode, contentType, body, Instant.now()));
+                            })
+                            .defaultIfEmpty(PageFetchResult.failure(urlString, finalUrl, statusCode, contentType, "Empty HTML response", Instant.now()));
                 })
                 .onErrorResume(ex -> {
                     String reason = "HTTP request failed: " + ex.getMessage();
@@ -80,7 +97,9 @@ public class PageFetcher {
                         reason = "Response body exceeds maximum limit";
                     } else if (ex instanceof TimeoutException || (ex.getCause() != null && ex.getCause() instanceof TimeoutException) || ex.getMessage().contains("Timeout")) {
                         reason = "HTTP response timeout";
-                    } else if (ex.getMessage().contains("redirect") || ex.getMessage().contains("Redirect")) {
+                    } else if (ex instanceof UnsupportedCharsetException || (ex.getCause() != null && ex.getCause() instanceof UnsupportedCharsetException)) {
+                        reason = "Invalid or unsupported character encoding: " + ex.getMessage();
+                    } else if (ex.getMessage() != null && (ex.getMessage().contains("redirect") || ex.getMessage().contains("Redirect"))) {
                         reason = "Redirect limit exceeded";
                     }
                     return Mono.just(PageFetchResult.failure(urlString, urlString, 0, null, reason, startTime));
@@ -118,7 +137,10 @@ public class PageFetcher {
         if (contentType == null || contentType.isBlank()) {
             return false;
         }
-        String lower = contentType.toLowerCase();
-        return lower.contains("text/html") || lower.contains("application/xhtml+xml");
+        String lower = contentType.toLowerCase().trim();
+        return lower.startsWith("text/html")
+                || lower.startsWith("application/xhtml+xml")
+                || lower.contains("text/html")
+                || lower.contains("application/xhtml+xml");
     }
 }
