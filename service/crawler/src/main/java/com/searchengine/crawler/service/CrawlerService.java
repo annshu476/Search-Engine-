@@ -6,6 +6,7 @@ import com.searchengine.crawler.fetcher.PageFetcher;
 import com.searchengine.crawler.model.dto.PageFetchResult;
 import com.searchengine.crawler.model.dto.RobotsCheckResult;
 import com.searchengine.crawler.model.kafka.UrlTask;
+import com.searchengine.crawler.ratelimit.DomainRateLimiter;
 import com.searchengine.crawler.robots.RobotsChecker;
 import java.time.Duration;
 import java.time.Instant;
@@ -14,7 +15,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
- * Orchestrator service coordinating robots compliance and URL page fetching.
+ * Orchestrator service coordinating robots compliance, domain rate limiting, and URL page fetching.
  */
 @Service
 public class CrawlerService {
@@ -24,10 +25,12 @@ public class CrawlerService {
     private static final Duration FETCH_TIMEOUT = Duration.ofSeconds(15);
 
     private final RobotsChecker robotsChecker;
+    private final DomainRateLimiter domainRateLimiter;
     private final PageFetcher pageFetcher;
 
-    public CrawlerService(RobotsChecker robotsChecker, PageFetcher pageFetcher) {
+    public CrawlerService(RobotsChecker robotsChecker, DomainRateLimiter domainRateLimiter, PageFetcher pageFetcher) {
         this.robotsChecker = robotsChecker;
+        this.domainRateLimiter = domainRateLimiter;
         this.pageFetcher = pageFetcher;
     }
 
@@ -53,7 +56,17 @@ public class CrawlerService {
         LOGGER.info("ROBOTS_ALLOWED urlHash={} url={} reason=\"{}\"",
                 task.urlHash(), task.url(), robotsResult.reason());
 
-        PageFetchResult result = pageFetcher.fetch(task.url()).block(FETCH_TIMEOUT);
+        String origin = robotsResult.origin();
+        long robotsDelayMs = robotsResult.crawlDelayMs();
+
+        domainRateLimiter.acquire(origin, robotsDelayMs);
+
+        PageFetchResult result;
+        try {
+            result = pageFetcher.fetch(task.url()).block(FETCH_TIMEOUT);
+        } finally {
+            domainRateLimiter.release(origin);
+        }
 
         if (result == null || !result.success()) {
             int statusCode = result != null ? result.statusCode() : 0;

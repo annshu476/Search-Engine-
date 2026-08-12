@@ -30,21 +30,26 @@ Feature 4 implemented explicit HTTP response classification, content-type verifi
 
 ## Feature 5 Scope: Robots.txt Compliance
 
-Feature 5 implements `robots.txt` fetching, rule parsing (`crawler-commons`), origin-based Caffeine caching, and compliance checks before page fetching.
+Feature 5 implemented `robots.txt` fetching, rule parsing (`crawler-commons`), origin-based Caffeine caching, and compliance checks before page fetching.
 
-### Included in Feature 5
-- **Robots Parser Library**: Uses `com.github.crawler-commons:crawler-commons:1.4` for standard `robots.txt` parsing (User-Agent rules, Allow/Disallow, wildcards, Crawl-delay).
-- **Origin Caching**: Thread-safe Caffeine cache (`crawler.robots.cache-ttl: 1h`, `crawler.robots.cache-max-size: 1000` origins). Origins isolate scheme and host (`http://example.com` vs `https://example.com`).
-- **HTTP Status & Fail-Closed Rules**:
-  - `404 Not Found` -> No Robots Policy -> **ALLOW** crawl.
-  - `2xx` -> Parse rules for `SearchEngineBot/1.0` -> Evaluate **ALLOW** / **DISALLOW**.
-  - `401` / `403 Forbidden` -> **DISALLOW** crawl.
-  - `5xx` / Timeout / Network Error -> **ROBOTS UNAVAILABLE** -> Fail closed.
-- **Kafka ACK Integration**:
-  - **Allowed**: Proceeds to `PageFetcher`. If fetch succeeds -> ACK.
-  - **Disallowed**: Valid crawl decision to skip -> Return normally -> **ACK**.
-  - **Robots Infrastructure Unavailable**: Throws `RobotsUnavailableException` -> **NO ACK**.
-- **No Robots Recursion**: `RobotsFetcher` fetches `https://<origin>/robots.txt` directly without calling `RobotsChecker` or `PageFetcher`.
+---
+
+## Feature 6 Scope: Domain Rate Limiting
+
+Feature 6 implements polite per-origin request rate limiting (`DomainRateLimiter`), enforcing minimum request intervals and a maximum of 1 active request per origin.
+
+### Included in Feature 6
+- **Origin Identity**: Canonical `scheme://host[:port]` key. Standard ports (`http:80`, `https:443`) are stripped for consistency (`https://example.com:443` -> `https://example.com`). `http` and `https` operate independently.
+- **Delay Calculation**:
+  - `robots Crawl-delay` (if valid >= 0) overrides default.
+  - Fallback to `crawler.rate-limit.default-delay` (`2s`).
+  - Clamped between `0s` and `60s` (`crawler.rate-limit.max-delay`).
+- **Concurrency & Isolation**:
+  - Max active requests per origin = `1` (`max-concurrent-per-origin`).
+  - Managed per-origin via Caffeine cache (`1000` max origins, `30m` idle expiration).
+  - Requests to distinct origins execute concurrently without mutual blocking.
+- **Permit Safety**:
+  - `CrawlerService` acquires rate-limit permit and guarantees permit release in `finally` block for success, errors, timeouts, and exceptions.
 
 ---
 
@@ -58,7 +63,7 @@ UrlTaskConsumer (Feature 2)
 CrawlerService
     ↓
 RobotsChecker (Feature 5)
-    ├── ALLOWED → PageFetcher (Feature 3 & 4) → HTTP Server
+    ├── ALLOWED → DomainRateLimiter (Feature 6) → PageFetcher (Feature 3 & 4) → HTTP Server
     ├── DISALLOWED → Skip page fetch & ACK task
     └── UNAVAILABLE → Throw exception & NO ACK task
 ```
@@ -72,7 +77,7 @@ RobotsChecker (Feature 5)
 - Non-blocking HTTP page fetching using Spring WebClient
 - HTTP response classification, content-type filtering & size validation
 - `robots.txt` fetching, rule parsing, origin caching, and compliance checks
-- Per-domain rate limiting (future)
+- Polite per-origin rate limiting & concurrency control
 - HTTP error and retry handling (future)
 - Raw HTML document generation & publishing (future)
 
@@ -106,7 +111,7 @@ By default, the service runs on port `8081`.
 ## Verification & Testing
 
 ### Offline Unit & Context Tests (Default)
-Runs deterministically using `MockWebServer` without calling live external websites:
+Runs deterministically using `MockWebServer` and simulated clocks without calling live external websites:
 
 ```bash
 ./mvnw test

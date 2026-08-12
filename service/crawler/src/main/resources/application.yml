@@ -37,6 +37,12 @@ crawler:
     cache-max-size: ${CRAWLER_ROBOTS_CACHE_MAX_SIZE:1000}
     max-response-size: ${CRAWLER_ROBOTS_MAX_RESPONSE_SIZE:1MB}
     timeout: ${CRAWLER_ROBOTS_TIMEOUT:5s}
+  rate-limit:
+    default-delay: ${CRAWLER_DEFAULT_DELAY:2s}
+    max-delay: ${CRAWLER_MAX_DELAY:60s}
+    max-concurrent-per-origin: ${CRAWLER_MAX_CONCURRENT_PER_ORIGIN:1}
+    cache-max-size: ${CRAWLER_RATE_LIMIT_CACHE_MAX_SIZE:1000}
+    state-expiration: ${CRAWLER_RATE_LIMIT_STATE_EXPIRATION:30m}
 
 application:
   name: ${spring.application.name}

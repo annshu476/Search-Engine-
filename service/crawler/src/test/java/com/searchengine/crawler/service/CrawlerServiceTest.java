@@ -2,6 +2,7 @@ package com.searchengine.crawler.service;
 
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -13,6 +14,7 @@ import com.searchengine.crawler.fetcher.PageFetcher;
 import com.searchengine.crawler.model.dto.PageFetchResult;
 import com.searchengine.crawler.model.dto.RobotsCheckResult;
 import com.searchengine.crawler.model.kafka.UrlTask;
+import com.searchengine.crawler.ratelimit.DomainRateLimiter;
 import com.searchengine.crawler.robots.RobotsChecker;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
@@ -29,13 +31,16 @@ class CrawlerServiceTest {
     private RobotsChecker robotsChecker;
 
     @Mock
+    private DomainRateLimiter domainRateLimiter;
+
+    @Mock
     private PageFetcher pageFetcher;
 
     @InjectMocks
     private CrawlerService crawlerService;
 
     @Test
-    void acceptsAndFetchesWhenRobotsAllowed() {
+    void acceptsAndFetchesWhenRobotsAllowedAndRateLimited() {
         UrlTask task = new UrlTask(
                 1,
                 "https://spring.io",
@@ -50,11 +55,14 @@ class CrawlerServiceTest {
                 .thenReturn(Mono.just(PageFetchResult.success(task.url(), task.url(), 200, "text/html", "<html>Content</html>", Instant.now())));
 
         assertThatNoException().isThrownBy(() -> crawlerService.processUrlTask(task));
+
+        verify(domainRateLimiter).acquire("https://spring.io", -1);
         verify(pageFetcher).fetch(task.url());
+        verify(domainRateLimiter).release("https://spring.io");
     }
 
     @Test
-    void skipsFetchingAndReturnsNormallyWhenRobotsDisallowed() {
+    void skipsFetchingAndRateLimitingWhenRobotsDisallowed() {
         UrlTask task = new UrlTask(
                 1,
                 "https://spring.io/private",
@@ -67,11 +75,14 @@ class CrawlerServiceTest {
                 .thenReturn(Mono.just(RobotsCheckResult.disallowed("https://spring.io", "Disallowed")));
 
         assertThatNoException().isThrownBy(() -> crawlerService.processUrlTask(task));
+
+        verify(domainRateLimiter, never()).acquire(anyString(), anyLong());
         verify(pageFetcher, never()).fetch(anyString());
+        verify(domainRateLimiter, never()).release(anyString());
     }
 
     @Test
-    void throwsRobotsUnavailableExceptionWhenRobotsFails() {
+    void throwsRobotsUnavailableExceptionWithoutRateLimiting() {
         UrlTask task = new UrlTask(
                 1,
                 "https://spring.io",
@@ -87,11 +98,12 @@ class CrawlerServiceTest {
                 .isInstanceOf(RobotsUnavailableException.class)
                 .hasMessageContaining("HTTP 500");
 
+        verify(domainRateLimiter, never()).acquire(anyString(), anyLong());
         verify(pageFetcher, never()).fetch(anyString());
     }
 
     @Test
-    void throwsPageFetchExceptionWhenFetchFails() {
+    void releasesRateLimiterPermitWhenFetchFails() {
         UrlTask task = new UrlTask(
                 1,
                 "https://spring.io",
@@ -101,12 +113,15 @@ class CrawlerServiceTest {
         );
 
         when(robotsChecker.check(anyString()))
-                .thenReturn(Mono.just(RobotsCheckResult.allowed("https://spring.io", -1, "Allowed")));
+                .thenReturn(Mono.just(RobotsCheckResult.allowed("https://spring.io", 5000L, "Allowed")));
         when(pageFetcher.fetch(anyString()))
                 .thenReturn(Mono.just(PageFetchResult.failure(task.url(), task.url(), 404, "text/html", "HTTP status 404", Instant.now())));
 
         assertThatThrownBy(() -> crawlerService.processUrlTask(task))
                 .isInstanceOf(PageFetchException.class)
                 .hasMessageContaining("HTTP status 404");
+
+        verify(domainRateLimiter).acquire("https://spring.io", 5000L);
+        verify(domainRateLimiter).release("https://spring.io");
     }
 }
