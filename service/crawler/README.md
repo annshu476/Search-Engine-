@@ -24,26 +24,27 @@ Feature 3 implemented non-blocking HTTP web page fetching using Spring WebClient
 
 ## Feature 4 Scope: HTTP Response Handling
 
-Feature 4 implements explicit HTTP response classification, content-type verification, empty-body checks, and redirect limit enforcement.
+Feature 4 implemented explicit HTTP response classification, content-type verification, empty-body checks, and redirect limit enforcement.
 
-### Included in Feature 4
-- **HTTP Status Rules**:
-  - `200 OK` / `201 Created` with valid non-blank HTML body -> `success = true`.
-  - `204 No Content` -> `success = false` (`failureReason="No content (204)"`).
-  - `3xx` redirects (301, 302, 303, 307, 308) -> Auto-followed up to `maxRedirects = 5`. Exceeding 5 redirects -> `success = false` (`failureReason="Redirect limit exceeded"`).
-  - `4xx` (400, 401, 403, 404, 410) & `5xx` (500, 502, 503) -> `success = false`, status code preserved in `PageFetchResult`.
-- **Content-Type Validation**:
-  - Accepts `text/html` and `application/xhtml+xml` (including charset parameters e.g., `text/html; charset=UTF-8`).
-  - Missing Content-Type or binary/media types (`application/pdf`, `image/png`, `video/mp4`, `application/zip`) -> `success = false`.
-- **Body Validation**:
-  - Null, empty (`""`), or whitespace-only (`"   "`) HTML bodies -> `success = false` (`failureReason="Empty HTML response"`).
-- **Redirect Limit Enforcement**:
-  - Netty `HttpClient` redirect predicate explicitly configured: `res.redirectedFrom().length < maxRedirects`.
-  - `finalUrl` accurately captures destination URL after redirects.
-- **Failure Representation & Kafka ACK**:
-  - Structured `PageFetchResult` generated for expected HTTP failure outcomes.
-  - `CrawlerService` logs `PAGE_FETCH_FAILURE` and propagates `PageFetchException` to prevent Kafka ACK for un-fetched URLs.
-- **Deterministic Testing**: Comprehensive test coverage in `PageFetcherTest` using `MockWebServer` testing 2xx, 204, 3xx redirects, 4xx/5xx status codes, missing/unsupported Content-Types, empty bodies, charsets, and SSRF blocking offline.
+---
+
+## Feature 5 Scope: Robots.txt Compliance
+
+Feature 5 implements `robots.txt` fetching, rule parsing (`crawler-commons`), origin-based Caffeine caching, and compliance checks before page fetching.
+
+### Included in Feature 5
+- **Robots Parser Library**: Uses `com.github.crawler-commons:crawler-commons:1.4` for standard `robots.txt` parsing (User-Agent rules, Allow/Disallow, wildcards, Crawl-delay).
+- **Origin Caching**: Thread-safe Caffeine cache (`crawler.robots.cache-ttl: 1h`, `crawler.robots.cache-max-size: 1000` origins). Origins isolate scheme and host (`http://example.com` vs `https://example.com`).
+- **HTTP Status & Fail-Closed Rules**:
+  - `404 Not Found` -> No Robots Policy -> **ALLOW** crawl.
+  - `2xx` -> Parse rules for `SearchEngineBot/1.0` -> Evaluate **ALLOW** / **DISALLOW**.
+  - `401` / `403 Forbidden` -> **DISALLOW** crawl.
+  - `5xx` / Timeout / Network Error -> **ROBOTS UNAVAILABLE** -> Fail closed.
+- **Kafka ACK Integration**:
+  - **Allowed**: Proceeds to `PageFetcher`. If fetch succeeds -> ACK.
+  - **Disallowed**: Valid crawl decision to skip -> Return normally -> **ACK**.
+  - **Robots Infrastructure Unavailable**: Throws `RobotsUnavailableException` -> **NO ACK**.
+- **No Robots Recursion**: `RobotsFetcher` fetches `https://<origin>/robots.txt` directly without calling `RobotsChecker` or `PageFetcher`.
 
 ---
 
@@ -56,21 +57,10 @@ UrlTaskConsumer (Feature 2)
     ↓
 CrawlerService
     ↓
-PageFetcher (Feature 3 & 4)
-    ↓
-WebClient (Feature 3 & 4)
-    ↓
-HTTP Response Classification (Feature 4)
-    ↓
-robots.txt Checker (Future)
-    ↓
-Domain Rate Limiter (Future)
-    ↓
-HTML Validation (Future)
-    ↓
-RawHtmlDocument (Future)
-    ↓
-raw-html-topic (Future)
+RobotsChecker (Feature 5)
+    ├── ALLOWED → PageFetcher (Feature 3 & 4) → HTTP Server
+    ├── DISALLOWED → Skip page fetch & ACK task
+    └── UNAVAILABLE → Throw exception & NO ACK task
 ```
 
 ---
@@ -81,7 +71,7 @@ raw-html-topic (Future)
 - Consuming `UrlTask` messages from `url-topic`
 - Non-blocking HTTP page fetching using Spring WebClient
 - HTTP response classification, content-type filtering & size validation
-- `robots.txt` policy adherence (future)
+- `robots.txt` fetching, rule parsing, origin caching, and compliance checks
 - Per-domain rate limiting (future)
 - HTTP error and retry handling (future)
 - Raw HTML document generation & publishing (future)

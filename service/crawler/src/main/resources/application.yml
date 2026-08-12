@@ -31,6 +31,12 @@ crawler:
     response-timeout: ${CRAWLER_RESPONSE_TIMEOUT:10s}
     max-response-size: ${CRAWLER_MAX_RESPONSE_SIZE:10MB}
     max-redirects: ${CRAWLER_MAX_REDIRECTS:5}
+    ssrf-protection-enabled: ${CRAWLER_SSRF_PROTECTION_ENABLED:true}
+  robots:
+    cache-ttl: ${CRAWLER_ROBOTS_CACHE_TTL:1h}
+    cache-max-size: ${CRAWLER_ROBOTS_CACHE_MAX_SIZE:1000}
+    max-response-size: ${CRAWLER_ROBOTS_MAX_RESPONSE_SIZE:1MB}
+    timeout: ${CRAWLER_ROBOTS_TIMEOUT:5s}
 
 application:
   name: ${spring.application.name}
