@@ -44,6 +44,14 @@ public class GlobalExceptionHandler {
         problem.setTitle("Service unavailable");
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(problem);
     }
+
+    @ExceptionHandler(KafkaPublishException.class)
+    public ResponseEntity<ProblemDetail> handleKafkaPublishFailure(KafkaPublishException exception) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
+                "URL submission is temporarily unavailable");
+        problem.setTitle("Service unavailable");
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(problem);
+    }
     private ResponseEntity<ProblemDetail> badRequest(String detail, List<String> errors, Exception exception) {
         LOGGER.warn("Client request rejected: {}", exception.getMessage());
 

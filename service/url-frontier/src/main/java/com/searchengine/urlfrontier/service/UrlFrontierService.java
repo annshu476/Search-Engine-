@@ -3,8 +3,10 @@ package com.searchengine.urlfrontier.service;
 import com.searchengine.urlfrontier.hasher.Sha256UrlHasher;
 import com.searchengine.urlfrontier.model.dto.SubmitUrlRequest;
 import com.searchengine.urlfrontier.model.dto.SubmitUrlResponse;
+import com.searchengine.urlfrontier.model.kafka.UrlTask;
 import com.searchengine.urlfrontier.normalizer.UrlNormalizer;
 import com.searchengine.urlfrontier.priority.UrlPriorityAssigner;
+import com.searchengine.urlfrontier.producer.UrlTaskProducer;
 import com.searchengine.urlfrontier.repository.VisitedUrlRepository;
 import java.time.Clock;
 import java.time.Instant;
@@ -21,14 +23,17 @@ public class UrlFrontierService {
     private final UrlNormalizer urlNormalizer;
     private final VisitedUrlRepository visitedUrlRepository;
     private final UrlPriorityAssigner urlPriorityAssigner;
+    private final UrlTaskProducer urlTaskProducer;
 
     public UrlFrontierService(Clock clock, Sha256UrlHasher sha256UrlHasher, UrlNormalizer urlNormalizer,
-                              VisitedUrlRepository visitedUrlRepository, UrlPriorityAssigner urlPriorityAssigner) {
+                              VisitedUrlRepository visitedUrlRepository, UrlPriorityAssigner urlPriorityAssigner,
+                              UrlTaskProducer urlTaskProducer) {
         this.clock = clock;
         this.sha256UrlHasher = sha256UrlHasher;
         this.urlNormalizer = urlNormalizer;
         this.visitedUrlRepository = visitedUrlRepository;
         this.urlPriorityAssigner = urlPriorityAssigner;
+        this.urlTaskProducer = urlTaskProducer;
     }
 
     public SubmitUrlResponse submit(SubmitUrlRequest request) {
@@ -36,14 +41,19 @@ public class UrlFrontierService {
         String urlHash = sha256UrlHasher.hash(normalizedUrl);
         Instant timestamp = Instant.now(clock);
         boolean accepted = visitedUrlRepository.storeIfAbsent(urlHash, timestamp);
-        Integer priority = accepted ? urlPriorityAssigner.assign() : null;
-        if (accepted) {
-            LOGGER.info("URL_ACCEPTED urlHash={} priority={}", urlHash, priority);
-        } else {
+        if (!accepted) {
             LOGGER.info("URL_DUPLICATE urlHash={}", urlHash);
+            return new SubmitUrlResponse(false, request.url(), normalizedUrl, urlHash,
+                    null,
+                    "URL has already been seen", timestamp);
         }
-        return new SubmitUrlResponse(accepted, request.url(), normalizedUrl, urlHash,
+
+        int priority = urlPriorityAssigner.assign();
+        UrlTask urlTask = new UrlTask(UrlTask.SCHEMA_VERSION, normalizedUrl, urlHash, priority, timestamp);
+        urlTaskProducer.publish(urlTask);
+        LOGGER.info("URL_ACCEPTED urlHash={} priority={}", urlHash, priority);
+        return new SubmitUrlResponse(true, request.url(), normalizedUrl, urlHash,
                 priority,
-                accepted ? "URL accepted" : "URL has already been seen", timestamp);
+                "URL accepted", timestamp);
     }
 }

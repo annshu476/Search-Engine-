@@ -9,11 +9,28 @@ spring:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: all
+      retries: ${KAFKA_PRODUCER_RETRIES:3}
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: false
+        retry.backoff.ms: ${KAFKA_PRODUCER_RETRY_BACKOFF_MS:200}
+        request.timeout.ms: ${KAFKA_PRODUCER_REQUEST_TIMEOUT_MS:2000}
+        delivery.timeout.ms: ${KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS:5000}
+        max.block.ms: ${KAFKA_PRODUCER_MAX_BLOCK_MS:3000}
   lifecycle:
     timeout-per-shutdown-phase: 20s
 
 application:
   name: ${spring.application.name}
+  kafka:
+    url-task:
+      topic: ${URL_TASK_TOPIC:url-topic}
+      publish-timeout: ${URL_TASK_PUBLISH_TIMEOUT:3s}
 
 logging:
   level:

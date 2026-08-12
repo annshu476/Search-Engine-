@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`url-frontier` is the entry point for crawl frontier submissions in the distributed search engine. It currently accepts URL submissions, validates them, normalizes them, hashes them, deduplicates them in Redis, and assigns an initial backend-managed crawl priority.
+`url-frontier` is the entry point for crawl frontier submissions in the distributed search engine. It accepts URL submissions, validates them, normalizes them, hashes them, deduplicates them in Redis, assigns an initial backend-managed crawl priority, and publishes newly accepted crawl tasks to Kafka.
 
 ## Responsibilities
 
@@ -12,6 +12,7 @@
 - Generate a deterministic SHA-256 hash from each normalized URL.
 - Deduplicate normalized URLs in Redis for seven days.
 - Assign an initial crawl priority to newly accepted URLs.
+- Publish accepted URL crawl tasks to Kafka.
 - Return the original URL, normalized URL, URL hash, assigned priority when applicable, and a UTC timestamp.
 - Convert malformed or invalid HTTP requests into standard error responses.
 
@@ -21,7 +22,7 @@
 - Maven and the Maven Wrapper
 - Spring Web and Bean Validation
 - Spring Data Redis
-- Spring for Apache Kafka dependencies only
+- Spring for Apache Kafka
 - Spring Boot Actuator, Micrometer, and Prometheus registry
 - Lombok
 
@@ -29,7 +30,7 @@
 
 ```text
 com.searchengine.urlfrontier
-|- config/       application configuration and typed properties
+|- config/       application configuration, topic creation, and typed properties
 |- constant/     API path constants
 |- controller/   HTTP endpoints
 |- exception/    common HTTP error handling
@@ -37,12 +38,13 @@ com.searchengine.urlfrontier
 |- model/        DTO, Kafka, and Redis models
 |- normalizer/   URL normalization
 |- priority/     URL priority assignment
+|- producer/     Kafka publishing
 |- repository/   Redis-backed URL deduplication
 |- service/      application use cases
 `- validator/    request validation
 ```
 
-Future-facing placeholder packages remain for Kafka consumers, producers, metrics, utilities, and transport models that are not implemented yet.
+Future-facing placeholder packages remain for Kafka consumers, metrics, utilities, and transport models that are not implemented yet.
 
 ## API Documentation
 
@@ -85,6 +87,8 @@ Duplicate response: `409 Conflict`
 }
 ```
 
+Kafka or Redis publishing/storage failure response: `503 Service Unavailable`
+
 ## Completed Features
 
 - Feature 1: Project setup
@@ -93,6 +97,7 @@ Duplicate response: `409 Conflict`
 - Feature 4: SHA-256 URL hash generation
 - Feature 5: Redis URL deduplication
 - Feature 6: URL priority assignment
+- Feature 7: Kafka publishing
 
 ## URL Frontier Flow
 
@@ -104,7 +109,10 @@ Client
   -> Sha256UrlHasher
   -> VisitedUrlRepository
   -> UrlPriorityAssigner
-  -> Response
+  -> UrlTask
+  -> UrlTaskProducer
+  -> Kafka
+  -> url-topic
 ```
 
 ## Feature 5: Redis URL Deduplication
@@ -136,7 +144,70 @@ Clients cannot choose priority. The request contract stays:
 }
 ```
 
-V1 uses a fixed priority because the service does not yet have enough information to rank URLs meaningfully. Future versions may use signals such as seed URLs, page importance, freshness, domain policies, link signals, and crawl frequency. That logic belongs in later features, so the current implementation isolates assignment in `UrlPriorityAssigner` without introducing premature strategy abstractions.
+V1 uses a fixed priority because the service does not yet have enough information to rank URLs meaningfully. Future versions may use signals such as seed URLs, page importance, freshness, domain policies, link signals, and crawl frequency.
+
+## Feature 7: Kafka Publishing
+
+Accepted URLs are published to Kafka topic `url-topic` only after Redis confirms the URL is new.
+
+### UrlTask message
+
+```json
+{
+  "schemaVersion": 1,
+  "url": "https://spring.io",
+  "urlHash": "007f61681d94a000cdbe12b4e4bf3ec8ff126d8cb79179a01a79be2caa410b28",
+  "priority": 5,
+  "discoveredAt": "2026-08-11T18:30:00Z"
+}
+```
+
+Message rules:
+
+- `schemaVersion` starts at `1` for future schema evolution.
+- `url` is the normalized URL.
+- `urlHash` is the Kafka message key.
+- `priority` is the backend-assigned crawl priority.
+- `discoveredAt` is the UTC timestamp already used in the request flow.
+
+### Topic configuration
+
+Topic creation is infrastructure configuration, not business logic.
+
+- Topic: `url-topic`
+- Partitions: `1`
+- Replication factor: `1`
+- Creation approach: Spring `NewTopic` bean during application startup
+
+### Producer acknowledgement
+
+`UrlTaskProducer` does not treat `kafkaTemplate.send(...)` as immediate success. It waits for the broker acknowledgement with a bounded timeout before the request is considered successfully queued.
+
+- Kafka key: `urlHash`
+- Publish timeout: `3s`
+- Success log: `KAFKA_PUBLISH_SUCCESS`
+- Failure log: `KAFKA_PUBLISH_FAILURE`
+
+### Retry behavior
+
+Retries are delegated to the Kafka producer configuration instead of a custom retry loop.
+
+- Retries: `3`
+- Retry backoff: `200ms`
+- Request timeout: `2000ms`
+- Delivery timeout: `5000ms`
+- Max block: `3000ms`
+
+This keeps retries bounded and prevents broken Kafka connectivity from blocking the HTTP request indefinitely.
+
+### Failure behavior
+
+- Redis failure: return `503`, do not attempt Kafka publishing.
+- Duplicate URL: return `409`, do not assign priority, do not create `UrlTask`, do not publish to Kafka.
+- Kafka publish failure after Redis acceptance: return `503`.
+- Redis key is not deleted when Kafka publish fails.
+
+That last rule is an intentional V1 limitation. Redis remains the deduplication authority even if Kafka publish fails. A future hardening phase may introduce an Outbox pattern.
 
 ## Validation Errors
 
@@ -172,31 +243,66 @@ The service listens on `http://localhost:8080` by default.
 
 ## Docker Dependencies
 
-Start the shared Redis dependency from `infrastructure/docker`:
+Start the shared local infrastructure from `infrastructure/docker`.
+
+Kafka and ZooKeeper for Feature 7:
+
+```bash
+docker compose up -d zookeeper kafka
+docker ps
+```
+
+Redis remains required for Feature 5:
 
 ```bash
 docker compose up -d redis
 docker ps
-docker logs redis
-docker compose stop redis
 ```
 
-Kafka dependencies are present in the build only for future features. Kafka publishing is not implemented yet.
+Start all three if needed:
+
+```bash
+docker compose up -d zookeeper kafka redis
+```
+
+## Topic Verification
+
+Describe the topic from `infrastructure/docker`:
+
+```bash
+docker exec kafka kafka-topics --bootstrap-server kafka:29092 --describe --topic url-topic
+```
+
+Consume queued messages and print keys:
+
+```bash
+docker exec kafka kafka-console-consumer --bootstrap-server kafka:29092 --topic url-topic --from-beginning --property print.key=true --property key.separator=" | "
+```
 
 ## Environment Variables
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SERVER_PORT` | `8080` | HTTP port for the service. |
+| `REDIS_HOST` | `localhost` | Redis hostname. |
+| `REDIS_PORT` | `6379` | Redis port. |
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka bootstrap servers for local IDE execution. |
+| `URL_TASK_TOPIC` | `url-topic` | Kafka topic used for accepted URL tasks. |
+| `URL_TASK_PUBLISH_TIMEOUT` | `3s` | Maximum time to wait for Kafka acknowledgement. |
+| `KAFKA_PRODUCER_RETRIES` | `3` | Bounded Kafka producer retry count. |
+| `KAFKA_PRODUCER_RETRY_BACKOFF_MS` | `200` | Delay between producer retries. |
+| `KAFKA_PRODUCER_REQUEST_TIMEOUT_MS` | `2000` | Per-request broker timeout. |
+| `KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS` | `5000` | Overall producer delivery timeout. |
+| `KAFKA_PRODUCER_MAX_BLOCK_MS` | `3000` | Maximum block when producer metadata is unavailable. |
 | `LOGGING_LEVEL_ROOT` | `INFO` | Root logging level. |
 | `LOGGING_LEVEL_APPLICATION` | `INFO` | Logging level for application classes. |
 
 ## Testing
 
-- Unit tests mock `VisitedUrlRepository`.
+- Unit tests mock Redis and Kafka collaborators.
 - HTTP/application tests use mocked infrastructure for deterministic responses.
 - Redis integration tests are explicitly tagged as `integration`.
-- No Testcontainers are used.
+- No Kafka integration test or Testcontainers setup is included in the default suite.
 
 Run the default test suite:
 
@@ -213,6 +319,6 @@ Run tagged Redis integration tests explicitly:
 ## Roadmap
 
 1. Frontier-specific Micrometer counters and timers.
-2. Kafka events for accepted crawl tasks after persistence remains atomic.
+2. Kafka consumer-side crawl coordination.
 3. Richer priority strategies based on crawl signals.
-4. Scheduling and crawl politeness controls.
+4. Scheduling, politeness controls, and stronger delivery guarantees.

@@ -1,2 +1,2 @@
-/** Kafka producers; frontier event publishing will be added in a later feature. */
+/** Kafka producers for URL frontier task publishing. */
 package com.searchengine.urlfrontier.producer;

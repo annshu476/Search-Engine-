@@ -9,11 +9,14 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.searchengine.urlfrontier.exception.KafkaPublishException;
 import com.searchengine.urlfrontier.exception.RedisUnavailableException;
+import com.searchengine.urlfrontier.producer.UrlTaskProducer;
 import com.searchengine.urlfrontier.repository.VisitedUrlRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.Mockito;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -29,6 +32,9 @@ class UrlFrontierApplicationTests {
 
     @MockitoBean
     private VisitedUrlRepository visitedUrlRepository;
+
+    @MockitoBean
+    private UrlTaskProducer urlTaskProducer;
 
     UrlFrontierApplicationTests(MockMvc mockMvc) {
         this.mockMvc = mockMvc;
@@ -75,6 +81,19 @@ class UrlFrontierApplicationTests {
     void returnsServiceUnavailableWhenRedisIsUnavailable() throws Exception {
         when(visitedUrlRepository.storeIfAbsent(anyString(), any()))
                 .thenThrow(new RedisUnavailableException(null));
+
+        mockMvc.perform(post("/urls")
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"url\":\"https://spring.io\"}"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.title").value("Service unavailable"));
+    }
+
+    @Test
+    void returnsServiceUnavailableWhenKafkaPublishingFails() throws Exception {
+        when(visitedUrlRepository.storeIfAbsent(anyString(), any())).thenReturn(true);
+        Mockito.doThrow(new KafkaPublishException(new RuntimeException("kafka unavailable")))
+                .when(urlTaskProducer).publish(any());
 
         mockMvc.perform(post("/urls")
                         .contentType(APPLICATION_JSON)
