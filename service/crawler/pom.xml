@@ -54,6 +54,11 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>com.github.crawler-commons</groupId>
             <artifactId>crawler-commons</artifactId>
             <version>1.4</version>

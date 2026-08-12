@@ -36,20 +36,34 @@ Feature 5 implemented `robots.txt` fetching, rule parsing (`crawler-commons`), o
 
 ## Feature 6 Scope: Domain Rate Limiting
 
-Feature 6 implements polite per-origin request rate limiting (`DomainRateLimiter`), enforcing minimum request intervals and a maximum of 1 active request per origin.
+Feature 6 implemented polite per-origin request rate limiting (`DomainRateLimiter`), enforcing minimum request intervals and a maximum of 1 active request per origin.
 
-### Included in Feature 6
-- **Origin Identity**: Canonical `scheme://host[:port]` key. Standard ports (`http:80`, `https:443`) are stripped for consistency (`https://example.com:443` -> `https://example.com`). `http` and `https` operate independently.
-- **Delay Calculation**:
-  - `robots Crawl-delay` (if valid >= 0) overrides default.
-  - Fallback to `crawler.rate-limit.default-delay` (`2s`).
-  - Clamped between `0s` and `60s` (`crawler.rate-limit.max-delay`).
-- **Concurrency & Isolation**:
-  - Max active requests per origin = `1` (`max-concurrent-per-origin`).
-  - Managed per-origin via Caffeine cache (`1000` max origins, `30m` idle expiration).
-  - Requests to distinct origins execute concurrently without mutual blocking.
-- **Permit Safety**:
-  - `CrawlerService` acquires rate-limit permit and guarantees permit release in `finally` block for success, errors, timeouts, and exceptions.
+---
+
+## Feature 7 Scope: Retry & Failure Handling
+
+Feature 7 implements Spring Kafka native non-blocking retry topics (`@RetryableTopic`) and dead-letter topic (`url-topic-dlt`) with strict exception classification into transient vs permanent failures.
+
+### Included in Feature 7
+- **Non-Blocking Retry Architecture**: Uses Spring Kafka `@RetryableTopic` with 4 total attempts (1 initial attempt + 3 retries).
+  - Retry Delays: 2s -> 5s -> 15s.
+  - Automatically creates retry topics (`url-topic-retry-2000`, `url-topic-retry-5000`, `url-topic-retry-15000`) and dead-letter topic (`url-topic-dlt`).
+  - Failed messages are forwarded to retry topics without blocking main consumer threads.
+- **Exception Classification**:
+  - **Retryable (Transient)** -> `RetryableCrawlerException` & `RobotsUnavailableException`:
+    - HTTP `500, 502, 503, 504, 429`.
+    - Connection timeouts, response timeouts, DNS failures, network glitches.
+    - `Robots.txt` 5xx, timeouts, network failures.
+  - **Non-Retryable (Permanent)** -> `NonRetryableCrawlerException`:
+    - HTTP `400, 401, 403, 404, 410`.
+    - Unsupported Content-Type (`application/pdf`, `image/png`).
+    - Empty HTML body or oversized response (> 10MB).
+    - SSRF blocked / unsafe destination.
+    - Unsupported `schemaVersion` != 1 or malformed JSON payloads.
+- **Robots Disallowed Handling**:
+  - Disallowed URLs are a valid crawling decision -> Logged & skipped -> **ACK** (not retried).
+- **DLT Handler**:
+  - `handleDlt` method logs `CRAWL_DLT` metadata (`urlHash`, `url`, `originalTopic`, `partition`, `offset`, `failureReason`).
 
 ---
 
@@ -58,37 +72,19 @@ Feature 6 implements polite per-origin request rate limiting (`DomainRateLimiter
 ```text
 url-topic
     ↓
-UrlTaskConsumer (Feature 2)
+UrlTaskConsumer (Feature 2 & 7)
     ↓
 CrawlerService
     ↓
 RobotsChecker (Feature 5)
     ├── ALLOWED → DomainRateLimiter (Feature 6) → PageFetcher (Feature 3 & 4) → HTTP Server
     ├── DISALLOWED → Skip page fetch & ACK task
-    └── UNAVAILABLE → Throw exception & NO ACK task
+    └── UNAVAILABLE → RetryableCrawlerException → Retry Topics (2s, 5s, 15s) → DLT
 ```
 
 ---
 
-## Service Architecture Responsibilities
-
-### Crawler Owns:
-- Consuming `UrlTask` messages from `url-topic`
-- Non-blocking HTTP page fetching using Spring WebClient
-- HTTP response classification, content-type filtering & size validation
-- `robots.txt` fetching, rule parsing, origin caching, and compliance checks
-- Polite per-origin rate limiting & concurrency control
-- HTTP error and retry handling (future)
-- Raw HTML document generation & publishing (future)
-
-### Crawler Does NOT Own:
-- URL deduplication (owned by URL Frontier)
-- URL priority calculation (owned by URL Frontier)
-- Elasticsearch indexing / search queries
-
----
-
-## Running Infrastructure & Service
+## Local Verification & Topic Inspection
 
 ### 1. Start Infrastructure (Docker)
 From project root:
@@ -97,21 +93,31 @@ From project root:
 docker compose -f infrastructure/docker/docker-compose.yml up -d zookeeper kafka redis
 ```
 
-### 2. Run Service
-From `service/crawler` directory:
-
+### 2. Inspect Topics in Kafka Container
 ```bash
-./mvnw spring-boot:run
+docker exec -it kafka kafka-topics --bootstrap-server kafka:29092 --list
 ```
 
-By default, the service runs on port `8081`.
+Expected topic output:
+```text
+url-topic
+url-topic-retry-2000
+url-topic-retry-5000
+url-topic-retry-15000
+url-topic-dlt
+```
+
+### 3. Read DLT Messages
+```bash
+docker exec -it kafka kafka-console-consumer --bootstrap-server kafka:29092 --topic url-topic-dlt --from-beginning
+```
 
 ---
 
 ## Verification & Testing
 
 ### Offline Unit & Context Tests (Default)
-Runs deterministically using `MockWebServer` and simulated clocks without calling live external websites:
+Runs deterministically without requiring a live Kafka broker:
 
 ```bash
 ./mvnw test

@@ -1,10 +1,13 @@
 package com.searchengine.crawler.consumer;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
+import com.searchengine.crawler.exception.NonRetryableCrawlerException;
+import com.searchengine.crawler.exception.RetryableCrawlerException;
 import com.searchengine.crawler.model.kafka.UrlTask;
 import com.searchengine.crawler.service.CrawlerService;
 import java.time.Instant;
@@ -51,10 +54,11 @@ class UrlTaskConsumerTest {
         UrlTask task = new UrlTask(2, "https://spring.io", HASH, 5, Instant.now());
         ConsumerRecord<String, UrlTask> record = new ConsumerRecord<>(TOPIC, PARTITION, OFFSET, HASH, task);
 
-        urlTaskConsumer.consume(record, acknowledgment);
+        assertThatThrownBy(() -> urlTaskConsumer.consume(record, acknowledgment))
+                .isInstanceOf(NonRetryableCrawlerException.class)
+                .hasMessageContaining("Unsupported schema version");
 
         verify(crawlerService, never()).processUrlTask(any());
-        verify(acknowledgment, never()).acknowledge();
     }
 
     @ParameterizedTest
@@ -63,10 +67,11 @@ class UrlTaskConsumerTest {
         UrlTask task = new UrlTask(1, invalidUrl, HASH, 5, Instant.now());
         ConsumerRecord<String, UrlTask> record = new ConsumerRecord<>(TOPIC, PARTITION, OFFSET, HASH, task);
 
-        urlTaskConsumer.consume(record, acknowledgment);
+        assertThatThrownBy(() -> urlTaskConsumer.consume(record, acknowledgment))
+                .isInstanceOf(NonRetryableCrawlerException.class)
+                .hasMessageContaining("Validation error");
 
         verify(crawlerService, never()).processUrlTask(any());
-        verify(acknowledgment, never()).acknowledge();
     }
 
     @Test
@@ -74,10 +79,10 @@ class UrlTaskConsumerTest {
         UrlTask task = new UrlTask(1, null, HASH, 5, Instant.now());
         ConsumerRecord<String, UrlTask> record = new ConsumerRecord<>(TOPIC, PARTITION, OFFSET, HASH, task);
 
-        urlTaskConsumer.consume(record, acknowledgment);
+        assertThatThrownBy(() -> urlTaskConsumer.consume(record, acknowledgment))
+                .isInstanceOf(NonRetryableCrawlerException.class);
 
         verify(crawlerService, never()).processUrlTask(any());
-        verify(acknowledgment, never()).acknowledge();
     }
 
     @ParameterizedTest
@@ -86,10 +91,10 @@ class UrlTaskConsumerTest {
         UrlTask task = new UrlTask(1, "https://spring.io", invalidHash, 5, Instant.now());
         ConsumerRecord<String, UrlTask> record = new ConsumerRecord<>(TOPIC, PARTITION, OFFSET, invalidHash, task);
 
-        urlTaskConsumer.consume(record, acknowledgment);
+        assertThatThrownBy(() -> urlTaskConsumer.consume(record, acknowledgment))
+                .isInstanceOf(NonRetryableCrawlerException.class);
 
         verify(crawlerService, never()).processUrlTask(any());
-        verify(acknowledgment, never()).acknowledge();
     }
 
     @Test
@@ -97,10 +102,10 @@ class UrlTaskConsumerTest {
         UrlTask task = new UrlTask(1, "https://spring.io", null, 5, Instant.now());
         ConsumerRecord<String, UrlTask> record = new ConsumerRecord<>(TOPIC, PARTITION, OFFSET, null, task);
 
-        urlTaskConsumer.consume(record, acknowledgment);
+        assertThatThrownBy(() -> urlTaskConsumer.consume(record, acknowledgment))
+                .isInstanceOf(NonRetryableCrawlerException.class);
 
         verify(crawlerService, never()).processUrlTask(any());
-        verify(acknowledgment, never()).acknowledge();
     }
 
     @ParameterizedTest
@@ -109,10 +114,10 @@ class UrlTaskConsumerTest {
         UrlTask task = new UrlTask(1, "https://spring.io", HASH, invalidPriority, Instant.now());
         ConsumerRecord<String, UrlTask> record = new ConsumerRecord<>(TOPIC, PARTITION, OFFSET, HASH, task);
 
-        urlTaskConsumer.consume(record, acknowledgment);
+        assertThatThrownBy(() -> urlTaskConsumer.consume(record, acknowledgment))
+                .isInstanceOf(NonRetryableCrawlerException.class);
 
         verify(crawlerService, never()).processUrlTask(any());
-        verify(acknowledgment, never()).acknowledge();
     }
 
     @Test
@@ -120,21 +125,21 @@ class UrlTaskConsumerTest {
         UrlTask task = new UrlTask(1, "https://spring.io", HASH, 5, null);
         ConsumerRecord<String, UrlTask> record = new ConsumerRecord<>(TOPIC, PARTITION, OFFSET, HASH, task);
 
-        urlTaskConsumer.consume(record, acknowledgment);
+        assertThatThrownBy(() -> urlTaskConsumer.consume(record, acknowledgment))
+                .isInstanceOf(NonRetryableCrawlerException.class);
 
         verify(crawlerService, never()).processUrlTask(any());
-        verify(acknowledgment, never()).acknowledge();
     }
 
     @Test
-    void doesNotAcknowledgeWhenServiceProcessingFails() {
+    void propagatesExceptionWhenServiceProcessingFails() {
         UrlTask task = new UrlTask(1, "https://spring.io", HASH, 5, Instant.now());
         ConsumerRecord<String, UrlTask> record = new ConsumerRecord<>(TOPIC, PARTITION, OFFSET, HASH, task);
-        doThrow(new RuntimeException("Processing error")).when(crawlerService).processUrlTask(task);
+        doThrow(new RetryableCrawlerException("https://spring.io", "HTTP 500", 500)).when(crawlerService).processUrlTask(task);
 
-        urlTaskConsumer.consume(record, acknowledgment);
+        assertThatThrownBy(() -> urlTaskConsumer.consume(record, acknowledgment))
+                .isInstanceOf(RetryableCrawlerException.class);
 
         verify(crawlerService).processUrlTask(task);
-        verify(acknowledgment, never()).acknowledge();
     }
 }

@@ -8,7 +8,8 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import com.searchengine.crawler.exception.PageFetchException;
+import com.searchengine.crawler.exception.NonRetryableCrawlerException;
+import com.searchengine.crawler.exception.RetryableCrawlerException;
 import com.searchengine.crawler.exception.RobotsUnavailableException;
 import com.searchengine.crawler.fetcher.PageFetcher;
 import com.searchengine.crawler.model.dto.PageFetchResult;
@@ -103,7 +104,7 @@ class CrawlerServiceTest {
     }
 
     @Test
-    void releasesRateLimiterPermitWhenFetchFails() {
+    void throwsNonRetryableExceptionOn404() {
         UrlTask task = new UrlTask(
                 1,
                 "https://spring.io",
@@ -118,8 +119,31 @@ class CrawlerServiceTest {
                 .thenReturn(Mono.just(PageFetchResult.failure(task.url(), task.url(), 404, "text/html", "HTTP status 404", Instant.now())));
 
         assertThatThrownBy(() -> crawlerService.processUrlTask(task))
-                .isInstanceOf(PageFetchException.class)
+                .isInstanceOf(NonRetryableCrawlerException.class)
                 .hasMessageContaining("HTTP status 404");
+
+        verify(domainRateLimiter).acquire("https://spring.io", 5000L);
+        verify(domainRateLimiter).release("https://spring.io");
+    }
+
+    @Test
+    void throwsRetryableExceptionOn500() {
+        UrlTask task = new UrlTask(
+                1,
+                "https://spring.io",
+                "007f61681d94a000cdbe12b4e4bf3ec8ff126d8cb79179a01a79be2caa410b28",
+                5,
+                Instant.now()
+        );
+
+        when(robotsChecker.check(anyString()))
+                .thenReturn(Mono.just(RobotsCheckResult.allowed("https://spring.io", 5000L, "Allowed")));
+        when(pageFetcher.fetch(anyString()))
+                .thenReturn(Mono.just(PageFetchResult.failure(task.url(), task.url(), 500, "text/html", "HTTP status 500", Instant.now())));
+
+        assertThatThrownBy(() -> crawlerService.processUrlTask(task))
+                .isInstanceOf(RetryableCrawlerException.class)
+                .hasMessageContaining("HTTP status 500");
 
         verify(domainRateLimiter).acquire("https://spring.io", 5000L);
         verify(domainRateLimiter).release("https://spring.io");

@@ -1,6 +1,8 @@
 package com.searchengine.crawler.service;
 
+import com.searchengine.crawler.exception.NonRetryableCrawlerException;
 import com.searchengine.crawler.exception.PageFetchException;
+import com.searchengine.crawler.exception.RetryableCrawlerException;
 import com.searchengine.crawler.exception.RobotsUnavailableException;
 import com.searchengine.crawler.fetcher.PageFetcher;
 import com.searchengine.crawler.model.dto.PageFetchResult;
@@ -73,12 +75,38 @@ public class CrawlerService {
             String failureReason = (result != null && result.failureReason() != null) ? result.failureReason() : "Unknown fetch failure";
             LOGGER.error("PAGE_FETCH_FAILURE urlHash={} requestedUrl={} statusCode={} failureReason={}",
                     task.urlHash(), task.url(), statusCode, failureReason);
-            PageFetchResult failedResult = result != null ? result : PageFetchResult.failure(task.url(), task.url(), statusCode, null, failureReason, Instant.now());
-            throw new PageFetchException(failedResult);
+
+            if (isRetryable(result)) {
+                LOGGER.info("CRAWL_RETRY_SCHEDULED urlHash={} statusCode={} failureReason=\"{}\"",
+                        task.urlHash(), statusCode, failureReason);
+                throw new RetryableCrawlerException(task.url(), failureReason, statusCode);
+            } else {
+                LOGGER.warn("CRAWL_NON_RETRYABLE urlHash={} statusCode={} failureReason=\"{}\"",
+                        task.urlHash(), statusCode, failureReason);
+                throw new NonRetryableCrawlerException(task.url(), failureReason, statusCode);
+            }
         }
 
         int responseSize = result.body() != null ? result.body().length() : 0;
         LOGGER.info("PAGE_FETCH_SUCCESS urlHash={} requestedUrl={} finalUrl={} statusCode={} contentType={} responseSize={}",
                 task.urlHash(), result.requestedUrl(), result.finalUrl(), result.statusCode(), result.contentType(), responseSize);
+    }
+
+    public boolean isRetryable(PageFetchResult result) {
+        if (result == null) {
+            return true;
+        }
+        int statusCode = result.statusCode();
+        if (statusCode == 500 || statusCode == 502 || statusCode == 503 || statusCode == 504 || statusCode == 429) {
+            return true;
+        }
+        if (statusCode == 400 || statusCode == 401 || statusCode == 403 || statusCode == 404 || statusCode == 410) {
+            return false;
+        }
+        String reason = result.failureReason() != null ? result.failureReason().toLowerCase() : "";
+        if (reason.contains("timeout") || reason.contains("connection") || reason.contains("dns") || reason.contains("failed: ")) {
+            return true;
+        }
+        return false;
     }
 }

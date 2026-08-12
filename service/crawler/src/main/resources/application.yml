@@ -7,6 +7,13 @@ spring:
     name: crawler
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    admin:
+      auto-create: false
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: false
     consumer:
       group-id: ${KAFKA_CONSUMER_GROUP:crawler-service}
       auto-offset-reset: earliest
@@ -43,6 +50,8 @@ crawler:
     max-concurrent-per-origin: ${CRAWLER_MAX_CONCURRENT_PER_ORIGIN:1}
     cache-max-size: ${CRAWLER_RATE_LIMIT_CACHE_MAX_SIZE:1000}
     state-expiration: ${CRAWLER_RATE_LIMIT_STATE_EXPIRATION:30m}
+  retry:
+    max-attempts: ${CRAWLER_RETRY_MAX_ATTEMPTS:4}
 
 application:
   name: ${spring.application.name}
