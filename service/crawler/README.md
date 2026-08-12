@@ -12,25 +12,29 @@ Feature 1 established the Spring Boot 3.5.0 and Java 21 foundation, package arch
 
 ## Feature 2 Scope: Kafka Consumer
 
-Feature 2 implements Kafka consumer support for consuming `UrlTask` messages from `url-topic`.
-
-### Included in Feature 2
-- **Kafka Contract**: `UrlTask` record matching URL Frontier's message payload (`schemaVersion`, `url`, `urlHash`, `priority`, `discoveredAt`).
-- **Consumer Group**: `crawler-service` with `concurrency = 1`.
-- **Topic**: `url-topic`
-- **Deserialization**: `ErrorHandlingDeserializer` wrapping `JsonDeserializer` configured for `com.searchengine.crawler.model.kafka.UrlTask` with trusted package restriction.
-- **Validation**:
-  - `schemaVersion == 1` (rejects unsupported schema versions with log `URL_TASK_UNSUPPORTED_SCHEMA`)
-  - `url` required (non-null, non-blank)
-  - `urlHash` required (non-null, non-blank)
-  - `priority` required (1..10 inclusive)
-  - `discoveredAt` required (non-null timestamp)
-- **Manual Acknowledgement**: Ack mode set to `manual_immediate`. Acknowledges messages (`ack.acknowledge()`) ONLY after validation succeeds and `CrawlerService.processUrlTask(...)` returns normally.
-- **Offline Testing**: Complete unit test suite running without requiring a live Kafka broker.
+Feature 2 implemented Kafka consumer support for consuming `UrlTask` messages from `url-topic` under consumer group `crawler-service`.
 
 ---
 
-## Future Architecture Pipeline
+## Feature 3 Scope: HTTP Page Fetching
+
+Feature 3 implements non-blocking HTTP web page fetching using Spring WebClient (`PageFetcher`).
+
+### Included in Feature 3
+- **PageFetcher Component**: Reactive fetcher component returning `Mono<PageFetchResult>`.
+- **Fetch Result DTO**: `PageFetchResult` containing `requestedUrl`, `finalUrl`, `statusCode`, `contentType`, `body`, `fetchedAt`, `success`, and `failureReason`.
+- **User-Agent Header**: Configurable `SearchEngineBot/1.0` (`crawler.http.user-agent`).
+- **Timeouts**: Connect timeout `5s` (`crawler.http.connect-timeout`), Response timeout `10s` (`crawler.http.response-timeout`).
+- **Redirects**: Auto-follows up to `5` HTTP redirects (`crawler.http.max-redirects`) and tracks `finalUrl`.
+- **Max Response Size**: Configurable `10MB` codec limit (`crawler.http.max-response-size`) to prevent JVM memory exhaustion.
+- **Content Type Filter**: Restricts processing to HTML (`text/html`, `application/xhtml+xml`). Unsupported binary/media formats (e.g. PDF, images) are rejected.
+- **SSRF Protection**: Host/IP validation rejecting loopback (`127.0.0.1`, `::1`), link-local (`169.254.x.x`), and private IP ranges (`10.x.x.x`, `172.16-31.x.x`, `192.168.x.x`).
+- **Kafka ACK Propagation**: HTTP fetch failures throw `PageFetchException` inside `CrawlerService`, preventing Kafka offset ACK for failed tasks.
+- **Offline Deterministic Testing**: Test suite using `MockWebServer` to test HTTP status codes, redirects, timeouts, content-type filtering, size limits, and SSRF blocking offline.
+
+---
+
+## Architecture Pipeline
 
 ```text
 url-topic
@@ -39,11 +43,15 @@ UrlTaskConsumer (Feature 2)
     ↓
 CrawlerService
     ↓
+PageFetcher (Feature 3)
+    ↓
+WebClient (Feature 3)
+    ↓
+HTTP Server
+    ↓
 robots.txt Checker (Future)
     ↓
 Domain Rate Limiter (Future)
-    ↓
-WebClient Fetcher (Future)
     ↓
 HTML Validation (Future)
     ↓
@@ -58,7 +66,7 @@ raw-html-topic (Future)
 
 ### Crawler Owns:
 - Consuming `UrlTask` messages from `url-topic`
-- Web page fetching (future)
+- Non-blocking HTTP page fetching using Spring WebClient
 - `robots.txt` policy adherence (future)
 - Per-domain rate limiting (future)
 - HTTP error and retry handling (future)
@@ -94,7 +102,7 @@ By default, the service runs on port `8081`.
 ## Verification & Testing
 
 ### Offline Unit & Context Tests (Default)
-Runs deterministically without Kafka:
+Runs deterministically using `MockWebServer` without calling live external websites:
 
 ```bash
 ./mvnw test

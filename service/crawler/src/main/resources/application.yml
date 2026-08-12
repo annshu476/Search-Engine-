@@ -24,6 +24,14 @@ spring:
   lifecycle:
     timeout-per-shutdown-phase: 20s
 
+crawler:
+  http:
+    user-agent: ${CRAWLER_USER_AGENT:SearchEngineBot/1.0}
+    connect-timeout: ${CRAWLER_CONNECT_TIMEOUT:5s}
+    response-timeout: ${CRAWLER_RESPONSE_TIMEOUT:10s}
+    max-response-size: ${CRAWLER_MAX_RESPONSE_SIZE:10MB}
+    max-redirects: ${CRAWLER_MAX_REDIRECTS:5}
+
 application:
   name: ${spring.application.name}
   kafka:
