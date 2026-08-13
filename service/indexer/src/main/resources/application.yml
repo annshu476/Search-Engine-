@@ -1,0 +1,47 @@
+server:
+  port: ${SERVER_PORT:8083}
+
+spring:
+  application:
+    name: indexer
+
+elasticsearch:
+  url: ${ELASTICSEARCH_URL:http://localhost:9200}
+  username: ${ELASTICSEARCH_USERNAME:}
+  password: ${ELASTICSEARCH_PASSWORD:}
+  connect-timeout-ms: ${ELASTICSEARCH_CONNECT_TIMEOUT_MS:5000}
+  socket-timeout-ms: ${ELASTICSEARCH_SOCKET_TIMEOUT_MS:30000}
+
+logging:
+  level:
+    root: ${LOGGING_LEVEL_ROOT:INFO}
+    com.searchengine.indexer: ${LOGGING_LEVEL_APPLICATION:INFO}
+
+management:
+  info:
+    env:
+      enabled: true
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    tags:
+      application: ${spring.application.name}
+
+info:
+  application:
+    name: ${spring.application.name}
+    description: Indexer service for the distributed search engine
