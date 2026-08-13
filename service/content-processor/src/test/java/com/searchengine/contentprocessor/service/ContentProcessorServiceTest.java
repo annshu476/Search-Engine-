@@ -1,34 +1,92 @@
 package com.searchengine.contentprocessor.service;
 
 import com.searchengine.contentprocessor.model.kafka.RawHtmlDocument;
+import com.searchengine.contentprocessor.model.kafka.SearchDocument;
+import com.searchengine.contentprocessor.parser.HtmlDocumentParser;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.Instant;
+import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.*;
 
+@ExtendWith(MockitoExtension.class)
 class ContentProcessorServiceTest {
 
-    private final ContentProcessorService contentProcessorService = new ContentProcessorService();
+    @Mock
+    private HtmlDocumentParser htmlDocumentParser;
+
+    @InjectMocks
+    private ContentProcessorService contentProcessorService;
 
     @Test
-    void process_validDocument_executesWithoutException() {
-        RawHtmlDocument document = new RawHtmlDocument(
+    void process_validDocument_callsParserAndReturnsSearchDocument() {
+        RawHtmlDocument rawDoc = new RawHtmlDocument(
                 1,
                 "https://example.com/test",
                 "https://example.com/test",
                 "hash123",
                 200,
-                "text/html; charset=utf-8",
-                "<html><head><title>Test</title></head><body><p>Hello World</p></body></html>",
+                "text/html",
+                "<html><head><title>Test Title</title></head><body><p>Hello World</p></body></html>",
                 Instant.now()
         );
 
-        assertDoesNotThrow(() -> contentProcessorService.process(document));
+        SearchDocument expectedSearchDoc = new SearchDocument(
+                "https://example.com/test",
+                "https://example.com/test",
+                "hash123",
+                "Test Title",
+                null,
+                List.of(),
+                "Hello World",
+                "en",
+                2,
+                200,
+                "text/html",
+                rawDoc.fetchedAt(),
+                Instant.now()
+        );
+
+        when(htmlDocumentParser.parse(rawDoc)).thenReturn(expectedSearchDoc);
+
+        SearchDocument result = contentProcessorService.process(rawDoc);
+
+        assertThat(result).isNotNull();
+        assertThat(result).isEqualTo(expectedSearchDoc);
+        verify(htmlDocumentParser, times(1)).parse(rawDoc);
     }
 
     @Test
-    void process_nullDocument_handlesGracefully() {
-        assertDoesNotThrow(() -> contentProcessorService.process(null));
+    void process_nullDocument_returnsNullWithoutCallingParser() {
+        SearchDocument result = contentProcessorService.process(null);
+
+        assertThat(result).isNull();
+        verify(htmlDocumentParser, never()).parse(any());
+    }
+
+    @Test
+    void process_parserThrowsException_propagatesException() {
+        RawHtmlDocument rawDoc = new RawHtmlDocument(
+                1,
+                "https://example.com/error",
+                "https://example.com/error",
+                "hashError",
+                500,
+                "text/html",
+                "<html><body>Error</body></html>",
+                Instant.now()
+        );
+
+        when(htmlDocumentParser.parse(rawDoc)).thenThrow(new RuntimeException("Parsing failure"));
+
+        assertThrows(RuntimeException.class, () -> contentProcessorService.process(rawDoc));
+        verify(htmlDocumentParser, times(1)).parse(rawDoc);
     }
 }

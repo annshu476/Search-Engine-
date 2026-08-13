@@ -1,8 +1,10 @@
 package com.searchengine.contentprocessor.consumer;
 
 import com.searchengine.contentprocessor.model.kafka.RawHtmlDocument;
+import com.searchengine.contentprocessor.model.kafka.SearchDocument;
 import com.searchengine.contentprocessor.service.ContentProcessorService;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.SpyBean;
@@ -14,7 +16,7 @@ import org.springframework.test.context.TestPropertySource;
 import java.time.Instant;
 import java.util.concurrent.TimeUnit;
 
-import static org.mockito.ArgumentMatchers.any;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 
@@ -41,20 +43,40 @@ class RawHtmlConsumerIntegrationTest {
     private ContentProcessorService contentProcessorService;
 
     @Test
-    void endToEndKafkaMessageConsumption() throws Exception {
-        RawHtmlDocument document = new RawHtmlDocument(
+    void endToEndKafkaMessageConsumptionAndHtmlParsing() throws Exception {
+        String html = """
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                    <title>Integration Page Title</title>
+                    <meta name="description" content="Integration test page description.">
+                    <link rel="canonical" href="https://example.org/canonical-test">
+                </head>
+                <body>
+                    <h1>Main Integration Heading</h1>
+                    <p>Sample body paragraph text for integration testing.</p>
+                </body>
+                </html>
+                """;
+
+        RawHtmlDocument rawDocument = new RawHtmlDocument(
                 1,
                 "https://example.org/test",
                 "https://example.org/test",
-                "hash999",
+                "hashIntegration123",
                 200,
                 "text/html",
-                "<html><body>Integration Test</body></html>",
+                html,
                 Instant.now()
         );
 
-        kafkaTemplate.send("raw-html-topic", "hash999", document).get(10, TimeUnit.SECONDS);
+        kafkaTemplate.send("raw-html-topic", "hashIntegration123", rawDocument).get(10, TimeUnit.SECONDS);
 
-        verify(contentProcessorService, timeout(10000).times(1)).process(any(RawHtmlDocument.class));
+        ArgumentCaptor<RawHtmlDocument> captor = ArgumentCaptor.forClass(RawHtmlDocument.class);
+        verify(contentProcessorService, timeout(10000).times(1)).process(captor.capture());
+
+        RawHtmlDocument capturedRawDoc = captor.getValue();
+        assertThat(capturedRawDoc).isNotNull();
+        assertThat(capturedRawDoc.urlHash()).isEqualTo("hashIntegration123");
     }
 }

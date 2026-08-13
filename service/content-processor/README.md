@@ -2,17 +2,6 @@
 
 The **Content Processor** service transforms raw HTML documents fetched by the Crawler into structured search documents.
 
-## Current Scope (Feature 1: Service Foundation)
-
-Feature 1 establishes the service foundation, Kafka infrastructure, message contracts, and application configuration.
-
-> [!NOTE]
-> **Important Scope Notes:**
-> - HTML parsing (e.g. Jsoup) is **NOT** implemented in Feature 1.
-> - SearchDocument extraction logic is **NOT** implemented in Feature 1.
-> - Elasticsearch connection and search indexing/queries are **NOT** implemented in Feature 1.
-> - SearchDocument publishing is **NOT** active yet (only topic infrastructure is declared).
-
 ---
 
 ## Service Specifications
@@ -25,6 +14,40 @@ Feature 1 establishes the service foundation, Kafka infrastructure, message cont
 | Output Topic | `search-document-topic` (`${SEARCH_DOCUMENT_TOPIC:search-document-topic}`) |
 | Consumer Group | `content-processor` (`${KAFKA_CONSUMER_GROUP:content-processor}`) |
 | Acknowledgment | `manual_immediate` (ACK on success; no ACK on processing failure) |
+
+---
+
+## Feature 2: HTML Parsing & SearchDocument Creation
+
+Feature 2 implements DOM parsing using **Jsoup** (`org.jsoup:jsoup:1.18.3`) to transform raw HTML into populated `SearchDocument` V1 instances.
+
+> [!NOTE]
+> **Current Limitations:**
+> - `SearchDocument` records are created in memory; publishing to `search-document-topic` is **NOT** active yet (handled in Feature 3).
+> - Elasticsearch connection and search indexing are **NOT** implemented yet.
+
+### HTML Parsing & Extraction Rules
+
+| Field | Source / Rule |
+|---|---|
+| `url` | Copied from `RawHtmlDocument.url` |
+| `canonicalUrl` | Extracted from `<link rel="canonical" href="...">`. Relative URLs resolved against `finalUrl`. Absolute URLs preserved. If missing/blank, falls back to `RawHtmlDocument.finalUrl` |
+| `urlHash` | Copied from `RawHtmlDocument.urlHash` |
+| `title` | Text content of `<title>` tag (trimmed). Returns `null` if missing or empty |
+| `metaDescription` | Content attribute of `<meta name="description" content="...">` (case-insensitive name check). Returns `null` if missing or empty |
+| `headings` | Visible text of all `h1, h2, h3, h4, h5, h6` elements preserved in document order as `List<String>`. Empty headings ignored |
+| `bodyText` | Text from `<body>` with `<script>`, `<style>`, `<noscript>`, and `<template>` elements stripped prior to extraction. Whitespace normalized |
+| `wordCount` | Count of non-empty tokens obtained by splitting `bodyText.trim()` on `\\s+`. Returns `0` if bodyText is empty |
+| `language` | Priority 1: `<html lang="...">` attribute. Priority 2: `<meta http-equiv="content-language" content="...">`. Returns `null` if unstated |
+| `statusCode` | Copied from `RawHtmlDocument.statusCode` |
+| `contentType` | Copied from `RawHtmlDocument.contentType` |
+| `fetchedAt` | Copied from `RawHtmlDocument.fetchedAt` |
+| `indexedAt` | Timestamp (`Instant.now()`) when Content Processor constructed the `SearchDocument` |
+
+### Edge Case Handling
+
+- **Malformed HTML**: Parsed gracefully by Jsoup without throwing parsing exceptions.
+- **Empty / Null HTML**: Handled safely without NPE. Produces a `SearchDocument` with `title=null`, `metaDescription=null`, `headings=[]`, `bodyText=""`, `wordCount=0`, `canonicalUrl=finalUrl`, metadata copied, and current `indexedAt`.
 
 ---
 
@@ -80,7 +103,12 @@ public record SearchDocument(
 ### Run Unit and Integration Tests
 
 ```bash
-./mvnw test
+./mvnw clean test
+```
+
+Windows:
+```cmd
+.\mvnw.cmd clean test
 ```
 
 ### Run Service Locally
@@ -93,68 +121,7 @@ public record SearchDocument(
 
 ## Docker & Kafka Verification
 
-### Start Infrastructure Services
-
 ```bash
 docker compose -f infrastructure/docker/docker-compose.yml up -d zookeeper kafka redis
-```
-
-### Verify Kafka Topics
-
-```bash
 docker exec kafka kafka-topics --bootstrap-server kafka:29092 --list
-```
-
-Expected output includes:
-- `raw-html-topic`
-- `search-document-topic`
-- `url-topic`
-
----
-
-## Folder Structure
-
-```
-service/content-processor/
-├── pom.xml
-├── README.md
-├── .gitignore
-├── .dockerignore
-├── mvnw
-├── mvnw.cmd
-├── .mvn/
-│   └── wrapper/
-└── src/
-    ├── main/
-    │   ├── java/
-    │   │   └── com/
-    │   │       └── searchengine/
-    │   │           └── contentprocessor/
-    │   │               ├── ContentProcessorApplication.java
-    │   │               ├── config/
-    │   │               │   ├── KafkaConsumerConfig.java
-    │   │               │   └── SearchDocumentTopicConfig.java
-    │   │               ├── consumer/
-    │   │               │   └── RawHtmlConsumer.java
-    │   │               ├── service/
-    │   │               │   └── ContentProcessorService.java
-    │   │               ├── model/
-    │   │               │   └── kafka/
-    │   │               │       ├── RawHtmlDocument.java
-    │   │               │       └── SearchDocument.java
-    │   │               └── exception/
-    │   │                   └── GlobalExceptionHandler.java
-    │   └── resources/
-    │       └── application.yml
-    └── test/
-        └── java/
-            └── com/
-                └── searchengine/
-                    └── contentprocessor/
-                        ├── ContentProcessorApplicationTests.java
-                        ├── consumer/
-                        │   ├── RawHtmlConsumerTest.java
-                        │   └── RawHtmlConsumerIntegrationTest.java
-                        └── service/
-                            └── ContentProcessorServiceTest.java
 ```

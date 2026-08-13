@@ -1,6 +1,7 @@
 package com.searchengine.contentprocessor.consumer;
 
 import com.searchengine.contentprocessor.model.kafka.RawHtmlDocument;
+import com.searchengine.contentprocessor.model.kafka.SearchDocument;
 import com.searchengine.contentprocessor.service.ContentProcessorService;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.junit.jupiter.api.Test;
@@ -11,6 +12,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.kafka.support.Acknowledgment;
 
 import java.time.Instant;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.*;
@@ -40,6 +42,24 @@ class RawHtmlConsumerTest {
                 Instant.now()
         );
         ConsumerRecord<String, RawHtmlDocument> record = new ConsumerRecord<>("raw-html-topic", 0, 0L, "key", document);
+
+        SearchDocument searchDocument = new SearchDocument(
+                "https://example.com",
+                "https://example.com",
+                "abc123hash",
+                "Test Page",
+                null,
+                List.of("Test Page"),
+                "Test Page",
+                "en",
+                2,
+                200,
+                "text/html",
+                document.fetchedAt(),
+                Instant.now()
+        );
+
+        when(contentProcessorService.process(document)).thenReturn(searchDocument);
 
         rawHtmlConsumer.consume(record, acknowledgment);
 
