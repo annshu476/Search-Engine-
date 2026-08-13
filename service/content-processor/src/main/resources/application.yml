@@ -1,0 +1,59 @@
+server:
+  port: ${SERVER_PORT:8082}
+
+spring:
+  application:
+    name: content-processor
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP:content-processor}
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.value.default.type: com.searchengine.contentprocessor.model.kafka.RawHtmlDocument
+        spring.json.trusted.packages: com.searchengine.contentprocessor.model.kafka
+        spring.json.use.type.headers: false
+
+    listener:
+      ack-mode: manual_immediate
+      concurrency: 1
+
+content-processor:
+  kafka:
+    raw-html-topic: ${RAW_HTML_TOPIC:raw-html-topic}
+    search-document-topic: ${SEARCH_DOCUMENT_TOPIC:search-document-topic}
+
+logging:
+  level:
+    root: ${LOGGING_LEVEL_ROOT:INFO}
+    com.searchengine.contentprocessor: ${LOGGING_LEVEL_APPLICATION:INFO}
+
+management:
+  info:
+    env:
+      enabled: true
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  health:
+    kafka:
+      enabled: false
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+info:
+  application:
+    name: ${spring.application.name}
+    description: Content Processor service for the distributed search engine
