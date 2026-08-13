@@ -1,6 +1,6 @@
 # Content Processor Service
 
-The **Content Processor** service transforms raw HTML documents fetched by the Crawler into structured search documents.
+The **Content Processor** service transforms raw HTML documents fetched by the Crawler into structured search documents and publishes them to Kafka.
 
 ---
 
@@ -13,41 +13,50 @@ The **Content Processor** service transforms raw HTML documents fetched by the C
 | Input Topic | `raw-html-topic` (`${RAW_HTML_TOPIC:raw-html-topic}`) |
 | Output Topic | `search-document-topic` (`${SEARCH_DOCUMENT_TOPIC:search-document-topic}`) |
 | Consumer Group | `content-processor` (`${KAFKA_CONSUMER_GROUP:content-processor}`) |
-| Acknowledgment | `manual_immediate` (ACK on success; no ACK on processing failure) |
+| Message Key | `SearchDocument.urlHash` |
+| Publish Timeout | `3s` (`${SEARCH_DOCUMENT_PUBLISH_TIMEOUT:3s}`) |
+| Acknowledgment | `manual_immediate` (ACK on success; no ACK on parsing or publishing failure) |
 
 ---
 
-## Feature 2: HTML Parsing & SearchDocument Creation
+## Architecture & Pipeline
 
-Feature 2 implements DOM parsing using **Jsoup** (`org.jsoup:jsoup:1.18.3`) to transform raw HTML into populated `SearchDocument` V1 instances.
+```text
+raw-html-topic
+      ↓
+RawHtmlConsumer
+      ↓
+ContentProcessorService
+      ↓
+HtmlDocumentParser (Jsoup DOM extraction)
+      ↓
+SearchDocument
+      ↓
+SearchDocumentProducer (acks=all, key=urlHash)
+      ↓
+search-document-topic
+      ↓
+[Kafka Broker ACK -> RawHtmlConsumer ACK]
+```
 
-> [!NOTE]
-> **Current Limitations:**
-> - `SearchDocument` records are created in memory; publishing to `search-document-topic` is **NOT** active yet (handled in Feature 3).
-> - Elasticsearch connection and search indexing are **NOT** implemented yet.
+---
 
-### HTML Parsing & Extraction Rules
+## Feature 3: SearchDocument Kafka Publishing
 
-| Field | Source / Rule |
-|---|---|
-| `url` | Copied from `RawHtmlDocument.url` |
-| `canonicalUrl` | Extracted from `<link rel="canonical" href="...">`. Relative URLs resolved against `finalUrl`. Absolute URLs preserved. If missing/blank, falls back to `RawHtmlDocument.finalUrl` |
-| `urlHash` | Copied from `RawHtmlDocument.urlHash` |
-| `title` | Text content of `<title>` tag (trimmed). Returns `null` if missing or empty |
-| `metaDescription` | Content attribute of `<meta name="description" content="...">` (case-insensitive name check). Returns `null` if missing or empty |
-| `headings` | Visible text of all `h1, h2, h3, h4, h5, h6` elements preserved in document order as `List<String>`. Empty headings ignored |
-| `bodyText` | Text from `<body>` with `<script>`, `<style>`, `<noscript>`, and `<template>` elements stripped prior to extraction. Whitespace normalized |
-| `wordCount` | Count of non-empty tokens obtained by splitting `bodyText.trim()` on `\\s+`. Returns `0` if bodyText is empty |
-| `language` | Priority 1: `<html lang="...">` attribute. Priority 2: `<meta http-equiv="content-language" content="...">`. Returns `null` if unstated |
-| `statusCode` | Copied from `RawHtmlDocument.statusCode` |
-| `contentType` | Copied from `RawHtmlDocument.contentType` |
-| `fetchedAt` | Copied from `RawHtmlDocument.fetchedAt` |
-| `indexedAt` | Timestamp (`Instant.now()`) when Content Processor constructed the `SearchDocument` |
+Feature 3 completes the end-to-end Kafka-to-Kafka processing pipeline by publishing parsed `SearchDocument` records to `search-document-topic`.
 
-### Edge Case Handling
+### Producer & Reliability Configuration
 
-- **Malformed HTML**: Parsed gracefully by Jsoup without throwing parsing exceptions.
-- **Empty / Null HTML**: Handled safely without NPE. Produces a `SearchDocument` with `title=null`, `metaDescription=null`, `headings=[]`, `bodyText=""`, `wordCount=0`, `canonicalUrl=finalUrl`, metadata copied, and current `indexedAt`.
+- **Kafka Key**: `SearchDocument.urlHash()` ensures deterministic partitioning across topic partitions.
+- **Serialization**: `JsonSerializer` serializes `SearchDocument` as JSON without Java class type headers.
+- **Producer Guarantees**: `acks=all`, `enable.idempotence=true`.
+- **Broker ACK Wait**: `SearchDocumentProducer` synchronously waits for broker acknowledgment up to `publish-timeout` (default 3s).
+- **Publish Failure Handling**: If broker acknowledgment times out or fails, `SearchDocumentProducer` throws a retryable `SearchDocumentPublishException`. `RawHtmlConsumer` catches the exception and withholds message acknowledgment (`ack.acknowledge()`), allowing Kafka to redeliver the `RawHtmlDocument`.
+
+### At-Least-Once Delivery & Idempotency Semantics
+
+- **At-Least-Once Semantics**: If a `SearchDocument` is published to Kafka but the service crashes before acknowledging the incoming `RawHtmlDocument`, Kafka will redeliver the raw HTML message, potentially publishing a duplicate `SearchDocument`.
+- **Idempotency**: The downstream Indexer service will handle duplicates idempotently by using `urlHash` as the Elasticsearch `_id`.
 
 ---
 
@@ -111,17 +120,36 @@ Windows:
 .\mvnw.cmd clean test
 ```
 
-### Run Service Locally
-
-```bash
-./mvnw spring-boot:run
-```
-
 ---
 
 ## Docker & Kafka Verification
 
+### 1. Start Infrastructure Services
+
 ```bash
 docker compose -f infrastructure/docker/docker-compose.yml up -d zookeeper kafka redis
+```
+
+### 2. Verify Kafka Topics
+
+```bash
 docker exec kafka kafka-topics --bootstrap-server kafka:29092 --list
+```
+
+Expected output includes `raw-html-topic` and `search-document-topic`.
+
+### 3. Consume Output Topic
+
+```bash
+docker exec kafka kafka-console-consumer --bootstrap-server kafka:29092 --topic search-document-topic --from-beginning --property print.key=true --property key.separator=" | "
+```
+
+### 4. Publish Test Message to Input Topic
+
+```bash
+docker exec -i kafka kafka-console-producer --bootstrap-server kafka:29092 --topic raw-html-topic --property parse.key=true --property key.separator=":"
+```
+Input line:
+```text
+feature-3-docker-test:{"schemaVersion":1,"url":"https://example.com","finalUrl":"https://example.com","urlHash":"feature-3-docker-test","statusCode":200,"contentType":"text/html","html":"<html lang=\"en\"><head><title>Example Domain</title><meta name=\"description\" content=\"Example description\"><link rel=\"canonical\" href=\"https://example.com\"></head><body><h1>Example Domain</h1><p>Hello search engine</p></body></html>","fetchedAt":"2026-08-13T11:30:00Z"}
 ```

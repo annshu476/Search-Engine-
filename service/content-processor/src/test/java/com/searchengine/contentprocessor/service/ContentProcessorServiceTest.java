@@ -1,8 +1,10 @@
 package com.searchengine.contentprocessor.service;
 
+import com.searchengine.contentprocessor.exception.SearchDocumentPublishException;
 import com.searchengine.contentprocessor.model.kafka.RawHtmlDocument;
 import com.searchengine.contentprocessor.model.kafka.SearchDocument;
 import com.searchengine.contentprocessor.parser.HtmlDocumentParser;
+import com.searchengine.contentprocessor.producer.SearchDocumentProducer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -22,11 +24,14 @@ class ContentProcessorServiceTest {
     @Mock
     private HtmlDocumentParser htmlDocumentParser;
 
+    @Mock
+    private SearchDocumentProducer searchDocumentProducer;
+
     @InjectMocks
     private ContentProcessorService contentProcessorService;
 
     @Test
-    void process_validDocument_callsParserAndReturnsSearchDocument() {
+    void process_validDocument_callsParserAndProducerThenReturnsSearchDocument() {
         RawHtmlDocument rawDoc = new RawHtmlDocument(
                 1,
                 "https://example.com/test",
@@ -55,24 +60,27 @@ class ContentProcessorServiceTest {
         );
 
         when(htmlDocumentParser.parse(rawDoc)).thenReturn(expectedSearchDoc);
+        doNothing().when(searchDocumentProducer).send(expectedSearchDoc);
 
         SearchDocument result = contentProcessorService.process(rawDoc);
 
         assertThat(result).isNotNull();
         assertThat(result).isEqualTo(expectedSearchDoc);
         verify(htmlDocumentParser, times(1)).parse(rawDoc);
+        verify(searchDocumentProducer, times(1)).send(expectedSearchDoc);
     }
 
     @Test
-    void process_nullDocument_returnsNullWithoutCallingParser() {
+    void process_nullDocument_returnsNullWithoutCallingParserOrProducer() {
         SearchDocument result = contentProcessorService.process(null);
 
         assertThat(result).isNull();
         verify(htmlDocumentParser, never()).parse(any());
+        verify(searchDocumentProducer, never()).send(any());
     }
 
     @Test
-    void process_parserThrowsException_propagatesException() {
+    void process_parserThrowsException_doesNotCallProducer() {
         RawHtmlDocument rawDoc = new RawHtmlDocument(
                 1,
                 "https://example.com/error",
@@ -88,5 +96,45 @@ class ContentProcessorServiceTest {
 
         assertThrows(RuntimeException.class, () -> contentProcessorService.process(rawDoc));
         verify(htmlDocumentParser, times(1)).parse(rawDoc);
+        verify(searchDocumentProducer, never()).send(any());
+    }
+
+    @Test
+    void process_producerThrowsException_propagatesException() {
+        RawHtmlDocument rawDoc = new RawHtmlDocument(
+                1,
+                "https://example.com/test",
+                "https://example.com/test",
+                "hashPublishError",
+                200,
+                "text/html",
+                "<html><body>Hello</body></html>",
+                Instant.now()
+        );
+
+        SearchDocument parsedDoc = new SearchDocument(
+                "https://example.com/test",
+                "https://example.com/test",
+                "hashPublishError",
+                "Title",
+                null,
+                List.of(),
+                "Hello",
+                "en",
+                1,
+                200,
+                "text/html",
+                rawDoc.fetchedAt(),
+                Instant.now()
+        );
+
+        when(htmlDocumentParser.parse(rawDoc)).thenReturn(parsedDoc);
+        doThrow(new SearchDocumentPublishException("hashPublishError", "search-document-topic", "Broker timeout"))
+                .when(searchDocumentProducer).send(parsedDoc);
+
+        assertThrows(SearchDocumentPublishException.class, () -> contentProcessorService.process(rawDoc));
+
+        verify(htmlDocumentParser, times(1)).parse(rawDoc);
+        verify(searchDocumentProducer, times(1)).send(parsedDoc);
     }
 }

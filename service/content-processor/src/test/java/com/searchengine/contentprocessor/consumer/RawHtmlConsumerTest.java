@@ -1,5 +1,6 @@
 package com.searchengine.contentprocessor.consumer;
 
+import com.searchengine.contentprocessor.exception.SearchDocumentPublishException;
 import com.searchengine.contentprocessor.model.kafka.RawHtmlDocument;
 import com.searchengine.contentprocessor.model.kafka.SearchDocument;
 import com.searchengine.contentprocessor.service.ContentProcessorService;
@@ -30,7 +31,7 @@ class RawHtmlConsumerTest {
     private RawHtmlConsumer rawHtmlConsumer;
 
     @Test
-    void consume_validDocument_acknowledgesMessage() {
+    void consume_validDocument_acknowledgesMessageWhenProcessingSucceeds() {
         RawHtmlDocument document = new RawHtmlDocument(
                 1,
                 "https://example.com",
@@ -68,7 +69,30 @@ class RawHtmlConsumerTest {
     }
 
     @Test
-    void consume_serviceThrowsException_doesNotAcknowledgeMessage() {
+    void consume_producerPublishException_doesNotAcknowledgeMessage() {
+        RawHtmlDocument document = new RawHtmlDocument(
+                1,
+                "https://example.com",
+                "https://example.com",
+                "abc123hash",
+                200,
+                "text/html",
+                "<html><body><h1>Test Page</h1></body></html>",
+                Instant.now()
+        );
+        ConsumerRecord<String, RawHtmlDocument> record = new ConsumerRecord<>("raw-html-topic", 0, 0L, "key", document);
+
+        doThrow(new SearchDocumentPublishException("abc123hash", "search-document-topic", "Publish timeout"))
+                .when(contentProcessorService).process(document);
+
+        assertThrows(SearchDocumentPublishException.class, () -> rawHtmlConsumer.consume(record, acknowledgment));
+
+        verify(contentProcessorService, times(1)).process(document);
+        verify(acknowledgment, never()).acknowledge();
+    }
+
+    @Test
+    void consume_serviceParsingException_doesNotAcknowledgeMessage() {
         RawHtmlDocument document = new RawHtmlDocument(
                 1,
                 "https://example.com",
@@ -81,7 +105,7 @@ class RawHtmlConsumerTest {
         );
         ConsumerRecord<String, RawHtmlDocument> record = new ConsumerRecord<>("raw-html-topic", 0, 0L, "key", document);
 
-        doThrow(new RuntimeException("Service processing failure")).when(contentProcessorService).process(document);
+        doThrow(new RuntimeException("Parsing failure")).when(contentProcessorService).process(document);
 
         assertThrows(RuntimeException.class, () -> rawHtmlConsumer.consume(record, acknowledgment));
 

@@ -8,6 +8,14 @@ spring:
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
 
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        spring.json.add.type.headers: false
+
     consumer:
       group-id: ${KAFKA_CONSUMER_GROUP:content-processor}
       auto-offset-reset: earliest
@@ -28,6 +36,7 @@ content-processor:
   kafka:
     raw-html-topic: ${RAW_HTML_TOPIC:raw-html-topic}
     search-document-topic: ${SEARCH_DOCUMENT_TOPIC:search-document-topic}
+    publish-timeout: ${SEARCH_DOCUMENT_PUBLISH_TIMEOUT:3s}
 
 logging:
   level:
