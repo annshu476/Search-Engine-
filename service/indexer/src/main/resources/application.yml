@@ -25,8 +25,13 @@ spring:
       concurrency: 1
 
 indexer:
+  elasticsearch:
+    index-name: ${ELASTICSEARCH_INDEX_NAME:search-documents}
   kafka:
     search-document-topic: ${SEARCH_DOCUMENT_TOPIC:search-document-topic}
+  search:
+    max-results: ${SEARCH_MAX_RESULTS:10}
+    max-query-length: ${SEARCH_MAX_QUERY_LENGTH:200}
 
 elasticsearch:
   url: ${ELASTICSEARCH_URL:http://localhost:9200}
