@@ -1,5 +1,6 @@
 package com.searchengine.indexer.consumer;
 
+import com.searchengine.indexer.initializer.SearchDocumentIndexInitializer;
 import com.searchengine.indexer.model.kafka.SearchDocument;
 import com.searchengine.indexer.service.IndexerService;
 import org.junit.jupiter.api.Test;
@@ -10,6 +11,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.test.context.EmbeddedKafka;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 import java.time.Instant;
@@ -41,6 +43,9 @@ class SearchDocumentConsumerIntegrationTest {
 
     @MockitoSpyBean
     private IndexerService indexerService;
+
+    @MockitoBean
+    private SearchDocumentIndexInitializer searchDocumentIndexInitializer;
 
     @Test
     void endToEndKafkaConsumptionAndProcessing() throws Exception {

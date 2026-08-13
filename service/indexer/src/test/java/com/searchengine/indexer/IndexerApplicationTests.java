@@ -1,6 +1,7 @@
 package com.searchengine.indexer;
 
 import com.searchengine.indexer.health.ElasticsearchHealthIndicator;
+import com.searchengine.indexer.initializer.SearchDocumentIndexInitializer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.health.Health;
@@ -23,6 +24,9 @@ class IndexerApplicationTests {
 
     @MockitoBean
     private ElasticsearchHealthIndicator elasticsearchHealthIndicator;
+
+    @MockitoBean
+    private SearchDocumentIndexInitializer searchDocumentIndexInitializer;
 
     @Test
     void contextLoads() {
