@@ -44,26 +44,41 @@ Feature 6 implemented polite per-origin request rate limiting (`DomainRateLimite
 
 Feature 7 implements Spring Kafka native non-blocking retry topics (`@RetryableTopic`) and dead-letter topic (`url-topic-dlt`) with strict exception classification into transient vs permanent failures.
 
-### Included in Feature 7
-- **Non-Blocking Retry Architecture**: Uses Spring Kafka `@RetryableTopic` with 4 total attempts (1 initial attempt + 3 retries).
-  - Retry Delays: 2s -> 5s -> 15s.
-  - Automatically creates retry topics (`url-topic-retry-2000`, `url-topic-retry-5000`, `url-topic-retry-15000`) and dead-letter topic (`url-topic-dlt`).
-  - Failed messages are forwarded to retry topics without blocking main consumer threads.
-- **Exception Classification**:
-  - **Retryable (Transient)** -> `RetryableCrawlerException` & `RobotsUnavailableException`:
-    - HTTP `500, 502, 503, 504, 429`.
-    - Connection timeouts, response timeouts, DNS failures, network glitches.
-    - `Robots.txt` 5xx, timeouts, network failures.
-  - **Non-Retryable (Permanent)** -> `NonRetryableCrawlerException`:
-    - HTTP `400, 401, 403, 404, 410`.
-    - Unsupported Content-Type (`application/pdf`, `image/png`).
-    - Empty HTML body or oversized response (> 10MB).
-    - SSRF blocked / unsafe destination.
-    - Unsupported `schemaVersion` != 1 or malformed JSON payloads.
-- **Robots Disallowed Handling**:
-  - Disallowed URLs are a valid crawling decision -> Logged & skipped -> **ACK** (not retried).
-- **DLT Handler**:
-  - `handleDlt` method logs `CRAWL_DLT` metadata (`urlHash`, `url`, `originalTopic`, `partition`, `offset`, `failureReason`).
+---
+
+## Feature 8 Scope: Raw HTML Publishing
+
+Feature 8 implements publishing fetched HTML pages to the downstream Kafka topic `raw-html-topic`.
+
+### Key Components of Feature 8
+- **Kafka Contract (`RawHtmlDocument`)**:
+  - `schemaVersion` (int) - Currently version 1.
+  - `url` (String) - Original requested URL.
+  - `finalUrl` (String) - Final URL after HTTP redirects.
+  - `urlHash` (String) - SHA-256 canonical hash used as the Kafka message key.
+  - `statusCode` (int) - HTTP status code (e.g. 200).
+  - `contentType` (String) - Verified MIME type (e.g. `text/html`).
+  - `html` (String) - Complete HTML body payload.
+  - `fetchedAt` (Instant) - Timestamp when fetch completed.
+- **Topic Configuration (`raw-html-topic`)**:
+  - Partition count: 1 partition for V1.
+  - Replication factor: 1 for local development.
+  - Defined cleanly via `RawHtmlTopicConfig.java` and externalized via `application.yml` (`crawler.raw-html.topic`).
+- **Producer Component (`RawHtmlProducer`)**:
+  - Publishes `RawHtmlDocument` using `urlHash` as the message key.
+  - Bounded timeout (`crawler.raw-html.publish-timeout: 3s`) waiting for broker ACK.
+  - Throws `RawHtmlPublishException` on timeout or broker failure.
+- **Publish Failure Integration**:
+  - `RawHtmlPublishException` extends `RetryableCrawlerException`.
+  - When raw HTML publishing fails, the exception is caught by Feature 7's non-blocking retry mechanism, retrying the task across retry topics (`url-topic-retry-2000`, `url-topic-retry-5000`, `url-topic-retry-15000`) before routing to `url-topic-dlt`.
+  - Rate-limit permits are guaranteed to be released in `finally` blocks prior to publishing.
+- **At-Least-Once Delivery Semantics & Limitations**:
+  - Deduplication is not performed on `raw-html-topic`.
+  - If a task is retried after HTML was successfully fetched but Kafka publishing failed, the same `RawHtmlDocument` may be published more than once.
+  - Downstream services (e.g., HTML parser) must handle duplicate documents statelessly or idempotently.
+- **Payload Size**:
+  - Page fetch response size remains capped at 10MB (`PageFetcher` response size limit).
+  - `RawHtmlDocument` carries the complete raw HTML string. Compression or external blob storage can be evaluated in subsequent pipeline iterations.
 
 ---
 
@@ -77,7 +92,15 @@ UrlTaskConsumer (Feature 2 & 7)
 CrawlerService
     ↓
 RobotsChecker (Feature 5)
-    ├── ALLOWED → DomainRateLimiter (Feature 6) → PageFetcher (Feature 3 & 4) → HTTP Server
+    ├── ALLOWED → DomainRateLimiter (Feature 6) → PageFetcher (Feature 3 & 4)
+    │                                                      ↓ (SUCCESS)
+    │                                              RawHtmlDocument (Feature 8)
+    │                                                      ↓
+    │                                              RawHtmlProducer
+    │                                                      ↓
+    │                                              raw-html-topic → ACK Task
+    │                                                      ↓ (PUBLISH FAILURE)
+    │                                              RawHtmlPublishException → Retry Topics (2s, 5s, 15s) → DLT
     ├── DISALLOWED → Skip page fetch & ACK task
     └── UNAVAILABLE → RetryableCrawlerException → Retry Topics (2s, 5s, 15s) → DLT
 ```
@@ -95,11 +118,12 @@ docker compose -f infrastructure/docker/docker-compose.yml up -d zookeeper kafka
 
 ### 2. Inspect Topics in Kafka Container
 ```bash
-docker exec -it kafka kafka-topics --bootstrap-server kafka:29092 --list
+docker exec kafka kafka-topics --bootstrap-server kafka:29092 --list
 ```
 
 Expected topic output:
 ```text
+raw-html-topic
 url-topic
 url-topic-retry-2000
 url-topic-retry-5000
@@ -107,20 +131,30 @@ url-topic-retry-15000
 url-topic-dlt
 ```
 
-### 3. Read DLT Messages
+### 3. Consume Raw HTML Messages
 ```bash
-docker exec -it kafka kafka-console-consumer --bootstrap-server kafka:29092 --topic url-topic-dlt --from-beginning
+docker exec kafka kafka-console-consumer \
+  --bootstrap-server kafka:29092 \
+  --topic raw-html-topic \
+  --from-beginning \
+  --property print.key=true \
+  --property key.separator=" | "
+```
+
+### 4. Read DLT Messages
+```bash
+docker exec kafka kafka-console-consumer --bootstrap-server kafka:29092 --topic url-topic-dlt --from-beginning
 ```
 
 ---
 
 ## Verification & Testing
 
-### Offline Unit & Context Tests (Default)
-Runs deterministically without requiring a live Kafka broker:
+### Offline Unit & Integration Tests
+Runs complete test suite using embedded Kafka brokers without requiring live external services:
 
 ```bash
-./mvnw test
+.\mvnw.cmd clean test
 ```
 
 ### Health Endpoint

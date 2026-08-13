@@ -7,7 +7,9 @@ import com.searchengine.crawler.exception.RobotsUnavailableException;
 import com.searchengine.crawler.fetcher.PageFetcher;
 import com.searchengine.crawler.model.dto.PageFetchResult;
 import com.searchengine.crawler.model.dto.RobotsCheckResult;
+import com.searchengine.crawler.model.kafka.RawHtmlDocument;
 import com.searchengine.crawler.model.kafka.UrlTask;
+import com.searchengine.crawler.producer.RawHtmlProducer;
 import com.searchengine.crawler.ratelimit.DomainRateLimiter;
 import com.searchengine.crawler.robots.RobotsChecker;
 import java.time.Duration;
@@ -17,7 +19,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
- * Orchestrator service coordinating robots compliance, domain rate limiting, and URL page fetching.
+ * Orchestrator service coordinating robots compliance, domain rate limiting, URL page fetching, and raw HTML publishing.
  */
 @Service
 public class CrawlerService {
@@ -29,11 +31,18 @@ public class CrawlerService {
     private final RobotsChecker robotsChecker;
     private final DomainRateLimiter domainRateLimiter;
     private final PageFetcher pageFetcher;
+    private final RawHtmlProducer rawHtmlProducer;
 
-    public CrawlerService(RobotsChecker robotsChecker, DomainRateLimiter domainRateLimiter, PageFetcher pageFetcher) {
+    public CrawlerService(
+            RobotsChecker robotsChecker,
+            DomainRateLimiter domainRateLimiter,
+            PageFetcher pageFetcher,
+            RawHtmlProducer rawHtmlProducer
+    ) {
         this.robotsChecker = robotsChecker;
         this.domainRateLimiter = domainRateLimiter;
         this.pageFetcher = pageFetcher;
+        this.rawHtmlProducer = rawHtmlProducer;
     }
 
     public void processUrlTask(UrlTask task) {
@@ -90,6 +99,21 @@ public class CrawlerService {
         int responseSize = result.body() != null ? result.body().length() : 0;
         LOGGER.info("PAGE_FETCH_SUCCESS urlHash={} requestedUrl={} finalUrl={} statusCode={} contentType={} responseSize={}",
                 task.urlHash(), result.requestedUrl(), result.finalUrl(), result.statusCode(), result.contentType(), responseSize);
+
+        RawHtmlDocument rawHtmlDocument = new RawHtmlDocument(
+                RawHtmlDocument.CURRENT_SCHEMA_VERSION,
+                task.url(),
+                result.finalUrl(),
+                task.urlHash(),
+                result.statusCode(),
+                result.contentType(),
+                result.body(),
+                Instant.now()
+        );
+
+        LOGGER.info("RAW_HTML_CREATED urlHash={} statusCode={}", task.urlHash(), result.statusCode());
+
+        rawHtmlProducer.publish(rawHtmlDocument);
     }
 
     public boolean isRetryable(PageFetchResult result) {

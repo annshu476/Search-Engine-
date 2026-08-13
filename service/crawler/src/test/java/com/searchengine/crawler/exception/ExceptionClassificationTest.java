@@ -16,7 +16,7 @@ class ExceptionClassificationTest {
 
     @BeforeEach
     void setUp() {
-        crawlerService = new CrawlerService(null, null, null);
+        crawlerService = new CrawlerService(null, null, null, null);
     }
 
     @ParameterizedTest
@@ -50,6 +50,12 @@ class ExceptionClassificationTest {
     @Test
     void classifiesRobotsUnavailableExceptionAsRetryable() {
         RobotsUnavailableException ex = new RobotsUnavailableException("https://example.com", "HTTP 500");
+        assertThat(ex).isInstanceOf(RetryableCrawlerException.class);
+    }
+
+    @Test
+    void classifiesRawHtmlPublishExceptionAsRetryable() {
+        RawHtmlPublishException ex = new RawHtmlPublishException("https://example.com", "Publish failed");
         assertThat(ex).isInstanceOf(RetryableCrawlerException.class);
     }
 }

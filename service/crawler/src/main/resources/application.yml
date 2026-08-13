@@ -52,6 +52,9 @@ crawler:
     state-expiration: ${CRAWLER_RATE_LIMIT_STATE_EXPIRATION:30m}
   retry:
     max-attempts: ${CRAWLER_RETRY_MAX_ATTEMPTS:4}
+  raw-html:
+    topic: ${RAW_HTML_TOPIC:raw-html-topic}
+    publish-timeout: ${RAW_HTML_PUBLISH_TIMEOUT:3s}
 
 application:
   name: ${spring.application.name}

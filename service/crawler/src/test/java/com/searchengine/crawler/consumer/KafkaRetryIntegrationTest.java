@@ -33,7 +33,7 @@ import org.springframework.test.context.TestPropertySource;
 @SpringBootTest
 @EmbeddedKafka(
         partitions = 1,
-        topics = {"url-topic", "url-topic-retry-2000", "url-topic-retry-5000", "url-topic-retry-15000", "url-topic-dlt"}
+        topics = {"url-topic", "url-topic-retry-2000", "url-topic-retry-5000", "url-topic-retry-15000", "url-topic-dlt", "raw-html-topic"}
 )
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_EACH_TEST_METHOD)
 @TestPropertySource(properties = {
