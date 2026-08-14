@@ -34,7 +34,7 @@ class SearchDocumentIndexerIntegrationTest {
     private SearchService searchService;
 
     @Test
-    void endToEndElasticsearchIndexingIdempotencyPaginationAndRelevance() throws Exception {
+    void endToEndElasticsearchIndexingIdempotencyPaginationRelevanceAndFuzzy() throws Exception {
         // 1. Verify index created by initializer
         indexInitializer.initializeIndex();
         boolean indexExists = elasticsearchClient.indices().exists(e -> e.index("search-documents")).value();
@@ -162,7 +162,16 @@ class SearchDocumentIndexerIntegrationTest {
 
         SearchResponse relevanceResponse = searchService.search("Spring Boot", 0, 10, "relevance");
         assertThat(relevanceResponse.results()).isNotEmpty();
-        // Document A (Title match for "Spring Boot") must rank higher than Document B (Body-only match)
         assertThat(relevanceResponse.results().get(0).urlHash()).isEqualTo("hash-rel-a");
+
+        // 8. Test Feature 7 Fuzzy Search & Typo Tolerance
+        // Typo search "Sprng Boot" should find Document A ("Spring Boot Framework Overview")
+        SearchResponse fuzzyResponse = searchService.search("Sprng Boot", 0, 10, "relevance");
+        assertThat(fuzzyResponse.totalHits()).isGreaterThanOrEqualTo(1L);
+        assertThat(fuzzyResponse.results()).extracting(SearchResponse -> SearchResponse.urlHash()).contains("hash-rel-a");
+
+        // Typo search with sort=newest
+        SearchResponse fuzzyNewestResponse = searchService.search("Sprng Boot", 0, 10, "newest");
+        assertThat(fuzzyNewestResponse.totalHits()).isGreaterThanOrEqualTo(1L);
     }
 }

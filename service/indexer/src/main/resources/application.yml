@@ -38,6 +38,9 @@ indexer:
       headings-boost: ${SEARCH_HEADINGS_BOOST:3.0}
       meta-description-boost: ${SEARCH_META_DESCRIPTION_BOOST:2.0}
       body-boost: ${SEARCH_BODY_BOOST:1.0}
+    fuzzy:
+      enabled: ${SEARCH_FUZZY_ENABLED:true}
+      fuzziness: ${SEARCH_FUZZINESS:AUTO}
 
 elasticsearch:
   url: ${ELASTICSEARCH_URL:http://localhost:9200}

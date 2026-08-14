@@ -26,19 +26,28 @@ class SearchPropertiesTest {
         assertThat(relevance.getHeadingsBoost()).isEqualTo(3.0);
         assertThat(relevance.getMetaDescriptionBoost()).isEqualTo(2.0);
         assertThat(relevance.getBodyBoost()).isEqualTo(1.0);
+
+        SearchProperties.Fuzzy fuzzy = searchProperties.getFuzzy();
+        assertThat(fuzzy.isEnabled()).isTrue();
+        assertThat(fuzzy.getFuzziness()).isEqualTo("AUTO");
     }
 
     @Test
-    void validateProperties_validCustomBoosts_succeeds() {
+    void validateProperties_validCustomBoostsAndFuzzy_succeeds() {
         SearchProperties.Relevance relevance = searchProperties.getRelevance();
         relevance.setTitleBoost(5.0);
         relevance.setHeadingsBoost(2.5);
         relevance.setMetaDescriptionBoost(1.5);
         relevance.setBodyBoost(0.5);
 
+        SearchProperties.Fuzzy fuzzy = searchProperties.getFuzzy();
+        fuzzy.setEnabled(true);
+        fuzzy.setFuzziness("1");
+
         searchProperties.validateProperties();
 
         assertThat(relevance.getTitleBoost()).isEqualTo(5.0);
+        assertThat(fuzzy.getFuzziness()).isEqualTo("1");
     }
 
     @Test
@@ -71,5 +80,35 @@ class SearchPropertiesTest {
         assertThatThrownBy(() -> searchProperties.validateProperties())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Body boost must be greater than 0");
+    }
+
+    @Test
+    void validateProperties_invalidNullFuzzinessWhenEnabled_throwsIllegalStateException() {
+        searchProperties.getFuzzy().setEnabled(true);
+        searchProperties.getFuzzy().setFuzziness(null);
+
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Fuzziness configuration must not be null or blank when fuzzy search is enabled");
+    }
+
+    @Test
+    void validateProperties_invalidBlankFuzzinessWhenEnabled_throwsIllegalStateException() {
+        searchProperties.getFuzzy().setEnabled(true);
+        searchProperties.getFuzzy().setFuzziness("   ");
+
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Fuzziness configuration must not be null or blank when fuzzy search is enabled");
+    }
+
+    @Test
+    void validateProperties_nullFuzzinessWhenDisabled_succeeds() {
+        searchProperties.getFuzzy().setEnabled(false);
+        searchProperties.getFuzzy().setFuzziness(null);
+
+        searchProperties.validateProperties();
+
+        assertThat(searchProperties.getFuzzy().isEnabled()).isFalse();
     }
 }

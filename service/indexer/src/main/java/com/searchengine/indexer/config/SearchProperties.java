@@ -17,6 +17,7 @@ public class SearchProperties {
     private int maxQueryLength = 200;
 
     private Relevance relevance = new Relevance();
+    private Fuzzy fuzzy = new Fuzzy();
 
     @Getter
     @Setter
@@ -25,6 +26,13 @@ public class SearchProperties {
         private double headingsBoost = 3.0;
         private double metaDescriptionBoost = 2.0;
         private double bodyBoost = 1.0;
+    }
+
+    @Getter
+    @Setter
+    public static class Fuzzy {
+        private boolean enabled = true;
+        private String fuzziness = "AUTO";
     }
 
     @PostConstruct
@@ -40,6 +48,9 @@ public class SearchProperties {
         }
         if (relevance.getBodyBoost() <= 0) {
             throw new IllegalStateException("Body boost must be greater than 0");
+        }
+        if (fuzzy.isEnabled() && (fuzzy.getFuzziness() == null || fuzzy.getFuzziness().isBlank())) {
+            throw new IllegalStateException("Fuzziness configuration must not be null or blank when fuzzy search is enabled");
         }
     }
 }

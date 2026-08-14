@@ -21,7 +21,7 @@ class ElasticsearchSearchQueryBuilderTest {
     }
 
     @Test
-    void buildMultiMatchQuery_buildsWeightedQueryWithConfiguredBoosts() {
+    void buildMultiMatchQuery_fuzzyEnabled_includesFuzzinessAndBoosts() {
         Query query = queryBuilder.buildMultiMatchQuery("Spring Boot");
 
         assertThat(query.isMultiMatch()).isTrue();
@@ -30,6 +30,7 @@ class ElasticsearchSearchQueryBuilderTest {
         assertThat(multiMatch.query()).isEqualTo("Spring Boot");
         assertThat(multiMatch.type()).isEqualTo(TextQueryType.BestFields);
         assertThat(multiMatch.minimumShouldMatch()).isEqualTo("1");
+        assertThat(multiMatch.fuzziness()).isEqualTo("AUTO");
 
         assertThat(multiMatch.fields()).containsExactly(
                 "title^4.0",
@@ -40,21 +41,30 @@ class ElasticsearchSearchQueryBuilderTest {
     }
 
     @Test
-    void buildMultiMatchQuery_usesCustomConfiguredBoosts() {
-        SearchProperties.Relevance relevance = searchProperties.getRelevance();
-        relevance.setTitleBoost(10.0);
-        relevance.setHeadingsBoost(5.0);
-        relevance.setMetaDescriptionBoost(2.5);
-        relevance.setBodyBoost(0.5);
+    void buildMultiMatchQuery_fuzzyDisabled_omitsFuzziness() {
+        searchProperties.getFuzzy().setEnabled(false);
 
-        Query query = queryBuilder.buildMultiMatchQuery("Java");
+        Query query = queryBuilder.buildMultiMatchQuery("Spring Boot");
         MultiMatchQuery multiMatch = query.multiMatch();
 
+        assertThat(multiMatch.query()).isEqualTo("Spring Boot");
+        assertThat(multiMatch.fuzziness()).isNull();
         assertThat(multiMatch.fields()).containsExactly(
-                "title^10.0",
-                "headings^5.0",
-                "metaDescription^2.5",
-                "bodyText^0.5"
+                "title^4.0",
+                "headings^3.0",
+                "metaDescription^2.0",
+                "bodyText^1.0"
         );
+    }
+
+    @Test
+    void buildMultiMatchQuery_customFuzziness_appliesCustomFuzzinessValue() {
+        searchProperties.getFuzzy().setEnabled(true);
+        searchProperties.getFuzzy().setFuzziness("2");
+
+        Query query = queryBuilder.buildMultiMatchQuery("elastcsearch");
+        MultiMatchQuery multiMatch = query.multiMatch();
+
+        assertThat(multiMatch.fuzziness()).isEqualTo("2");
     }
 }

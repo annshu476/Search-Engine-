@@ -103,8 +103,8 @@ public class SearchService {
                 }
             }
 
-            log.info("SEARCH_QUERY_EXECUTED query={} page={} size={} sort={} totalHits={} totalPages={} returnedResults={}",
-                    trimmedQuery, page, size, normalizedSort, totalHits, totalPages, results.size());
+            log.info("SEARCH_QUERY_EXECUTED query={} page={} size={} sort={} fuzzyEnabled={} totalHits={} totalPages={} returnedResults={}",
+                    trimmedQuery, page, size, normalizedSort, searchProperties.getFuzzy().isEnabled(), totalHits, totalPages, results.size());
 
             return new SearchResponse(trimmedQuery, totalHits, page, size, totalPages, normalizedSort, results);
 

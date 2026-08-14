@@ -16,6 +16,7 @@ public class ElasticsearchSearchQueryBuilder {
 
     public Query buildMultiMatchQuery(String queryText) {
         SearchProperties.Relevance relevance = searchProperties.getRelevance();
+        SearchProperties.Fuzzy fuzzy = searchProperties.getFuzzy();
 
         List<String> boostedFields = List.of(
                 "title^" + relevance.getTitleBoost(),
@@ -25,12 +26,18 @@ public class ElasticsearchSearchQueryBuilder {
         );
 
         return Query.of(q -> q
-                .multiMatch(m -> m
-                        .query(queryText)
-                        .fields(boostedFields)
-                        .type(TextQueryType.BestFields)
-                        .minimumShouldMatch("1")
-                )
+                .multiMatch(m -> {
+                    m.query(queryText)
+                     .fields(boostedFields)
+                     .type(TextQueryType.BestFields)
+                     .minimumShouldMatch("1");
+
+                    if (fuzzy.isEnabled()) {
+                        m.fuzziness(fuzzy.getFuzziness());
+                    }
+
+                    return m;
+                })
         );
     }
 }
