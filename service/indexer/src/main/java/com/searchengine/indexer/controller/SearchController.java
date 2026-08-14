@@ -30,11 +30,16 @@ public class SearchController {
     @GetMapping
     public ResponseEntity<SearchResponse> search(
             @RequestParam(name = "q", required = false) String query,
+            @RequestParam(name = "language", required = false) String language,
+            @RequestParam(name = "contentType", required = false) String contentType,
+            @RequestParam(name = "statusCode", required = false) Integer statusCode,
+            @RequestParam(name = "fromDate", required = false) String fromDate,
+            @RequestParam(name = "toDate", required = false) String toDate,
             @RequestParam(name = "page", defaultValue = "0") int page,
             @RequestParam(name = "size", defaultValue = "10") int size,
             @RequestParam(name = "sort", defaultValue = "relevance") String sort
     ) {
-        SearchResponse response = searchService.search(query, page, size, sort);
+        SearchResponse response = searchService.search(query, language, contentType, statusCode, fromDate, toDate, page, size, sort);
         return ResponseEntity.ok(response);
     }
 

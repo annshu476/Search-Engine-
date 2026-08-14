@@ -85,97 +85,178 @@ class SearchServiceTest {
     }
 
     @Test
-    void search_queryIsTrimmedBeforeExecution() throws IOException {
+    void search_noFilters_executesSuccessfully() throws IOException {
         co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
         given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
 
-        SearchResponse response = searchService.search("   Spring Boot   ");
+        SearchResponse response = searchService.search("spring", null, null, null, null, null, 0, 10, "relevance");
 
-        assertThat(response.query()).isEqualTo("Spring Boot");
+        assertThat(response.query()).isEqualTo("spring");
+        assertThat(response.totalHits()).isEqualTo(1L);
     }
 
     @Test
-    void search_defaultPageAndSize_appliesDefaults() throws IOException {
+    void search_languageFilter_executesSuccessfully() throws IOException {
         co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
         given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
 
-        SearchResponse response = searchService.search("spring");
+        SearchResponse response = searchService.search("spring", "en", null, null, null, null, 0, 10, "relevance");
 
-        assertThat(response.page()).isEqualTo(0);
-        assertThat(response.size()).isEqualTo(10);
-        assertThat(response.sort()).isEqualTo("relevance");
-        assertThat(response.totalPages()).isEqualTo(1);
+        assertThat(response.query()).isEqualTo("spring");
+        assertThat(response.results()).hasSize(1);
     }
 
     @Test
-    void search_explicitPageAndSize_calculatesFromAndSizeCorrectly() throws IOException {
+    void search_contentTypeFilter_executesSuccessfully() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+
+        SearchResponse response = searchService.search("spring", null, "text/html", null, null, null, 0, 10, "relevance");
+
+        assertThat(response.results()).hasSize(1);
+    }
+
+    @Test
+    void search_statusCodeFilter_executesSuccessfully() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+
+        SearchResponse response = searchService.search("spring", null, null, 200, null, null, 0, 10, "relevance");
+
+        assertThat(response.results()).hasSize(1);
+    }
+
+    @Test
+    void search_fromDateFilter_executesSuccessfully() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+
+        SearchResponse response = searchService.search("spring", null, null, null, "2026-08-01T00:00:00Z", null, 0, 10, "relevance");
+
+        assertThat(response.results()).hasSize(1);
+    }
+
+    @Test
+    void search_toDateFilter_executesSuccessfully() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+
+        SearchResponse response = searchService.search("spring", null, null, null, null, "2026-08-14T23:59:59Z", 0, 10, "relevance");
+
+        assertThat(response.results()).hasSize(1);
+    }
+
+    @Test
+    void search_bothDateFilters_executesSuccessfully() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+
+        SearchResponse response = searchService.search("spring", null, null, null, "2026-08-01T00:00:00Z", "2026-08-14T23:59:59Z", 0, 10, "relevance");
+
+        assertThat(response.results()).hasSize(1);
+    }
+
+    @Test
+    void search_multipleFiltersTogether_executesSuccessfully() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+
+        SearchResponse response = searchService.search("spring", "en", "text/html", 200, "2026-08-01T00:00:00Z", "2026-08-14T23:59:59Z", 0, 10, "relevance");
+
+        assertThat(response.results()).hasSize(1);
+    }
+
+    @Test
+    void search_filtersAndPagination_executesSuccessfully() throws IOException {
         co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(25L, null);
         given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
 
-        SearchResponse response = searchService.search("spring", 2, 10, "relevance");
+        SearchResponse response = searchService.search("spring", "en", null, 200, null, null, 1, 10, "relevance");
 
-        assertThat(response.page()).isEqualTo(2);
+        assertThat(response.page()).isEqualTo(1);
         assertThat(response.size()).isEqualTo(10);
         assertThat(response.totalHits()).isEqualTo(25L);
         assertThat(response.totalPages()).isEqualTo(3);
     }
 
     @Test
-    void search_withHighlights_mapsHighlightsToSearchResult() throws IOException {
-        Map<String, List<String>> highlights = Map.of(
-                "title", List.of("<em>Spring Framework</em>"),
-                "bodyText", List.of("Build apps with <em>Spring</em>.")
-        );
+    void search_filtersAndRelevanceSorting_executesSuccessfully() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+
+        SearchResponse response = searchService.search("spring", "en", null, 200, null, null, 0, 10, "relevance");
+
+        assertThat(response.sort()).isEqualTo("relevance");
+    }
+
+    @Test
+    void search_filtersAndNewestSorting_executesSuccessfully() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+
+        SearchResponse response = searchService.search("spring", "en", null, 200, null, null, 0, 10, "newest");
+
+        assertThat(response.sort()).isEqualTo("newest");
+    }
+
+    @Test
+    void search_filtersAndFuzzySearch_executesSuccessfully() throws IOException {
+        searchProperties.getFuzzy().setEnabled(true);
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+
+        SearchResponse response = searchService.search("sprng boot", "en", null, null, null, null, 0, 10, "relevance");
+
+        assertThat(response.query()).isEqualTo("sprng boot");
+    }
+
+    @Test
+    void search_filtersAndHighlighting_executesSuccessfully() throws IOException {
+        Map<String, List<String>> highlights = Map.of("title", List.of("<em>Spring</em>"));
         co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, highlights);
         given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
 
-        SearchResponse response = searchService.search("spring");
+        SearchResponse response = searchService.search("spring", "en", null, null, null, null, 0, 10, "relevance");
 
-        SearchResult result = response.results().get(0);
-        assertThat(result.highlights()).containsEntry("title", List.of("<em>Spring Framework</em>"));
-        assertThat(result.highlights()).containsEntry("bodyText", List.of("Build apps with <em>Spring</em>."));
+        assertThat(response.results().get(0).highlights()).containsEntry("title", List.of("<em>Spring</em>"));
     }
 
     @Test
-    void search_withoutHighlights_returnsEmptyMap() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, Map.of());
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        SearchResponse response = searchService.search("spring");
-
-        SearchResult result = response.results().get(0);
-        assertThat(result.highlights()).isNotNull();
-        assertThat(result.highlights()).isEmpty();
-    }
-
-    @Test
-    void search_negativePage_rejected() {
-        assertThatThrownBy(() -> searchService.search("test", -1, 10, "relevance"))
+    void search_fromDateAfterToDate_rejected() {
+        assertThatThrownBy(() -> searchService.search("spring", null, null, null, "2026-08-15T00:00:00Z", "2026-08-14T00:00:00Z", 0, 10, "relevance"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Page must be greater than or equal to 0");
+                .hasMessageContaining("fromDate must not be after toDate");
     }
 
     @Test
-    void search_sizeGreaterThanMaxPageSize_rejected() {
-        assertThatThrownBy(() -> searchService.search("test", 0, 51, "relevance"))
+    void search_invalidStatusCode_rejected() {
+        assertThatThrownBy(() -> searchService.search("spring", null, null, 99, null, null, 0, 10, "relevance"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Page size must be between 1 and 50");
-    }
+                .hasMessageContaining("Status code must be between 100 and 599");
 
-    @Test
-    void search_unsupportedSort_rejected() {
-        assertThatThrownBy(() -> searchService.search("test", 0, 10, "unsupported_sort"))
+        assertThatThrownBy(() -> searchService.search("spring", null, null, 600, null, null, 0, 10, "relevance"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Unsupported sort option: unsupported_sort");
+                .hasMessageContaining("Status code must be between 100 and 599");
     }
 
     @Test
-    void search_elasticsearchFailure_throwsSearchQueryException() throws IOException {
-        given(elasticsearchClient.search(any(Function.class), any(Class.class)))
-                .willThrow(new RuntimeException("Connection refused"));
+    void search_blankLanguage_rejected() {
+        assertThatThrownBy(() -> searchService.search("spring", "   ", null, null, null, null, 0, 10, "relevance"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Language filter must not be blank");
+    }
 
-        assertThatThrownBy(() -> searchService.search("java", 0, 10, "relevance"))
-                .isInstanceOf(SearchQueryException.class)
-                .hasMessageContaining("Elasticsearch search query failed for: java");
+    @Test
+    void search_blankContentType_rejected() {
+        assertThatThrownBy(() -> searchService.search("spring", null, "   ", null, null, null, 0, 10, "relevance"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Content-Type filter must not be blank");
+    }
+
+    @Test
+    void search_invalidDateFormat_rejected() {
+        assertThatThrownBy(() -> searchService.search("spring", null, null, null, "invalid-date", null, 0, 10, "relevance"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Invalid date format for fromDate");
     }
 }

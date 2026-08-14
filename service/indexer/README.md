@@ -1,6 +1,6 @@
 # Indexer Service
 
-The **Indexer Service** is Service 3 in the Search Engine pipeline. Its primary role is to consume processed document content from Kafka (`search-document-topic`), index the documents into Elasticsearch using explicit mappings, and expose REST Search APIs for querying indexed content with field-weighted relevance scoring, fuzzy typo tolerance, search result highlighting, search suggestions / autocomplete, pagination, and sorting support.
+The **Indexer Service** is Service 3 in the Search Engine pipeline. Its primary role is to consume processed document content from Kafka (`search-document-topic`), index the documents into Elasticsearch using explicit mappings, and expose REST Search APIs for querying indexed content with field-weighted relevance scoring, fuzzy typo tolerance, search result highlighting, search suggestions / autocomplete, advanced search filters, pagination, and sorting support.
 
 ---
 
@@ -26,7 +26,7 @@ IndexerService
 SearchDocumentIndexer
     ↓
 Elasticsearch (search-documents)
-    ├── SearchService           → GET /api/search?q={query}&page={page}&size={size}&sort={sort}
+    ├── SearchService           → GET /api/search?q={query}&language={lang}&contentType={type}&statusCode={status}&fromDate={from}&toDate={to}&page={page}&size={size}&sort={sort}
     └── SearchSuggestionService → GET /api/search/suggest?q={prefix}
 ```
 
@@ -102,10 +102,30 @@ Elasticsearch (search-documents)
 - Enforces a minimum prefix length of 2 characters (`min-prefix-length: 2`).
 - Returns clean `SearchSuggestionResponse` DTO containing `query` and `suggestions` list (`List<String>`).
 - Normalizes and deduplicates candidates deterministically while respecting `max-results: 8`.
-- Independent service boundary (`SearchSuggestionService`) preserving `/api/search` functionality unchanged.
+
+### Feature 10 — Advanced Search Filters
+- Extends `GET /api/search` with optional query filters:
+  - **`language`**: Exact keyword filter on `language` field (max 20 chars, non-blank).
+  - **`contentType`**: Exact keyword filter on `contentType` field (max 100 chars, non-blank).
+  - **`statusCode`**: Exact numeric filter on `statusCode` field (range 100–599).
+  - **`fromDate`**: Range filter `fetchedAt >= fromDate` (ISO-8601 timestamp).
+  - **`toDate`**: Range filter `fetchedAt <= toDate` (ISO-8601 timestamp).
+- Enforces validation: returns HTTP 400 if `fromDate > toDate` with `{"error": "fromDate must not be after toDate"}`.
+- Wraps full-text search and filters in an Elasticsearch `bool` query:
+  ```
+  bool:
+    must:
+      - multi_match query (with relevance weights, AUTO fuzziness)
+    filter:
+      - term: language
+      - term: contentType
+      - term: statusCode
+      - range: fetchedAt [fromDate .. toDate]
+  ```
+- Filter clauses execute in non-scoring context, preserving exact BM25 relevance ranking and highlighting behavior.
 
 > [!NOTE]
-> **Intentionally NOT implemented yet**: Spell correction, synonyms, semantic/vector search, query history, or personalized recommendations.
+> **Intentionally NOT implemented yet**: Semantic/vector search, spell correction, synonyms, query history, or personalized recommendations.
 
 ---
 
@@ -118,7 +138,7 @@ service/indexer/src/main/java/com/searchengine/indexer/
 │   ├── ElasticsearchConfig.java                # Bean definitions for RestClient, ElasticsearchTransport, and ElasticsearchClient
 │   ├── ElasticsearchProperties.java            # Connection configuration properties prefixed with 'elasticsearch'
 │   ├── IndexerElasticsearchProperties.java     # Index configuration properties prefixed with 'indexer.elasticsearch'
-│   └── SearchProperties.java                   # Search API configuration properties (max-results, max-page-size, max-query-length, relevance, fuzzy, highlight, suggestions)
+│   └── SearchProperties.java                   # Search API configuration properties
 ├── consumer/
 │   └── SearchDocumentConsumer.java             # Kafka listener for search-document-topic using manual ACK
 ├── controller/
@@ -139,17 +159,18 @@ service/indexer/src/main/java/com/searchengine/indexer/
 │   └── SearchDocumentMapper.java               # Maps SearchDocument records to Elasticsearch document Map
 ├── model/
 │   ├── dto/
+│   │   ├── SearchFilter.java                   # Filter parameters record DTO (language, contentType, statusCode, fromDate, toDate)
 │   │   ├── SearchResponse.java                 # Search API response wrapper
-│   │   ├── SearchResult.java                   # Individual search hit DTO (excludes bodyText, includes highlights map)
-│   │   └── SearchSuggestionResponse.java       # Suggestion API response DTO (query, suggestions list)
+│   │   ├── SearchResult.java                   # Individual search hit DTO
+│   │   └── SearchSuggestionResponse.java       # Suggestion API response DTO
 │   └── kafka/
 │       └── SearchDocument.java                 # Exact V1 SearchDocument record contract
 ├── search/
-│   ├── ElasticsearchSearchQueryBuilder.java   # Builds weighted best_fields multi-match queries with fuzziness and highlighting
+│   ├── ElasticsearchSearchQueryBuilder.java   # Builds bool search queries combining multi-match, fuzziness, filters, and highlighting
 │   └── ElasticsearchSuggestionQueryBuilder.java # Builds phrase_prefix multi-match queries for suggestions
 ├── service/
 │   ├── IndexerService.java                     # Domain service orchestrating document indexing
-│   ├── SearchService.java                      # Service executing search queries
+│   ├── SearchService.java                      # Service executing filtered search queries
 │   └── SearchSuggestionService.java            # Service executing prefix suggestion queries
 └── validator/
     └── SearchDocumentValidator.java            # Validates SearchDocument required fields and bounds
@@ -180,45 +201,44 @@ Default Port: `8083`
 | `indexer.search.fuzzy.enabled` | `true` | `SEARCH_FUZZY_ENABLED` | Enables fuzzy matching for typo tolerance |
 | `indexer.search.fuzzy.fuzziness` | `AUTO` | `SEARCH_FUZZINESS` | Elasticsearch fuzziness setting |
 | `indexer.search.highlight.enabled` | `true` | `SEARCH_HIGHLIGHT_ENABLED` | Enables search result highlighting |
-| `indexer.search.highlight.fragment-size` | `150` | `SEARCH_HIGHLIGHT_FRAGMENT_SIZE` | Maximum characters per highlight fragment |
-| `indexer.search.highlight.number-of-fragments` | `2` | `SEARCH_HIGHLIGHT_NUMBER_OF_FRAGMENTS` | Maximum highlight fragments per field |
-| `indexer.search.highlight.pre-tag` | `<em>` | `SEARCH_HIGHLIGHT_PRE_TAG` | Opening HTML highlight tag |
-| `indexer.search.highlight.post-tag` | `</em>` | `SEARCH_HIGHLIGHT_POST_TAG` | Closing HTML highlight tag |
 | `indexer.search.suggestions.enabled` | `true` | `SEARCH_SUGGESTIONS_ENABLED` | Enables search suggestions / autocomplete |
-| `indexer.search.suggestions.max-results` | `8` | `SEARCH_SUGGESTIONS_MAX_RESULTS` | Maximum number of suggestions returned |
-| `indexer.search.suggestions.min-prefix-length` | `2` | `SEARCH_SUGGESTIONS_MIN_PREFIX_LENGTH` | Minimum prefix characters required for suggest |
 | `elasticsearch.url` | `http://localhost:9200` | `ELASTICSEARCH_URL` | Target Elasticsearch endpoint URL |
 
 ---
 
 ## API Specification
 
-### Search Endpoint
+### Search Endpoint with Filters
 ```http
-GET /api/search?q={query}&page={page}&size={size}&sort={sort}
+GET /api/search?q={query}&language={lang}&contentType={type}&statusCode={status}&fromDate={from}&toDate={to}&page={page}&size={size}&sort={sort}
 ```
 
-### Suggestion Endpoint
-```http
-GET /api/search/suggest?q={prefix}
-```
+#### Example Filter Requests
 
-### Example Suggestion Request
-```http
-GET /api/search/suggest?q=spr
-```
+1. **Filter by Language**:
+   ```http
+   GET /api/search?q=spring&language=en
+   ```
 
-### Example Suggestion Response
-```json
-{
-  "query": "spr",
-  "suggestions": [
-    "spring boot framework overview",
-    "spring boot tutorial",
-    "spring framework guide"
-  ]
-}
-```
+2. **Filter by Content-Type**:
+   ```http
+   GET /api/search?q=spring&contentType=text/html
+   ```
+
+3. **Filter by Status Code**:
+   ```http
+   GET /api/search?q=spring&statusCode=200
+   ```
+
+4. **Filter by Date Range**:
+   ```http
+   GET /api/search?q=spring&fromDate=2026-08-01T00:00:00Z&toDate=2026-08-14T23:59:59Z
+   ```
+
+5. **Combined Filters with Pagination and Sorting**:
+   ```http
+   GET /api/search?q=spring&language=en&contentType=text/html&statusCode=200&page=0&size=10&sort=newest
+   ```
 
 ---
 
@@ -233,10 +253,3 @@ Run real Elasticsearch integration tests:
 ```powershell
 .\mvnw.cmd test -Pelasticsearch-integration
 ```
-
----
-
-## Planned Next Features
-
-- **Feature 10**: Kafka Retry Policy & Dead Letter Topic (DLT).
-- **Feature 11**: End-to-End Search Pipeline Verification.

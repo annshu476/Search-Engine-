@@ -39,7 +39,7 @@ class SearchDocumentIndexerIntegrationTest {
     private SearchSuggestionService searchSuggestionService;
 
     @Test
-    void endToEndElasticsearchIndexingPaginationRelevanceFuzzyHighlightingAndSuggestions() throws Exception {
+    void endToEndElasticsearchIndexingPaginationRelevanceFuzzyHighlightingSuggestionsAndFilters() throws Exception {
         // 1. Verify index created by initializer
         indexInitializer.initializeIndex();
         boolean indexExists = elasticsearchClient.indices().exists(e -> e.index("search-documents")).value();
@@ -150,9 +150,66 @@ class SearchDocumentIndexerIntegrationTest {
         assertThat(suggestionResponse.suggestions()).isNotEmpty();
         assertThat(suggestionResponse.suggestions().get(0)).contains("spring");
 
-        // Non-matching prefix
         SearchSuggestionResponse emptySuggestionResponse = searchSuggestionService.suggest("xyz");
         assertThat(emptySuggestionResponse.query()).isEqualTo("xyz");
         assertThat(emptySuggestionResponse.suggestions()).isEmpty();
+
+        // 9. Test Feature 10 Advanced Search Filters
+        Instant filterFetchedTime = Instant.parse("2026-08-05T12:00:00Z");
+
+        SearchDocument filterDocA = new SearchDocument(
+                "https://searchengine.org/filter-a", "https://searchengine.org/filter-a", "filter-a",
+                "UniqueFilterKeyword Document A", "Filter A description", List.of("Filters"),
+                "UniqueFilterKeyword body content for filter testing", "en", 100, 200, "text/html", filterFetchedTime, filterFetchedTime
+        );
+
+        SearchDocument filterDocB = new SearchDocument(
+                "https://searchengine.org/filter-b", "https://searchengine.org/filter-b", "filter-b",
+                "UniqueFilterKeyword Document B", "Filter B description", List.of("Filters"),
+                "UniqueFilterKeyword body content for filter testing", "fr", 100, 200, "text/html", filterFetchedTime, filterFetchedTime
+        );
+
+        SearchDocument filterDocC = new SearchDocument(
+                "https://searchengine.org/filter-c", "https://searchengine.org/filter-c", "filter-c",
+                "UniqueFilterKeyword Document C", "Filter C description", List.of("Filters"),
+                "UniqueFilterKeyword body content for filter testing", "en", 100, 200, "application/pdf", filterFetchedTime, filterFetchedTime
+        );
+
+        SearchDocument filterDocD = new SearchDocument(
+                "https://searchengine.org/filter-d", "https://searchengine.org/filter-d", "filter-d",
+                "UniqueFilterKeyword Document D", "Filter D description", List.of("Filters"),
+                "UniqueFilterKeyword body content for filter testing", "en", 100, 404, "text/html", filterFetchedTime, filterFetchedTime
+        );
+
+        searchDocumentIndexer.index(filterDocA);
+        searchDocumentIndexer.index(filterDocB);
+        searchDocumentIndexer.index(filterDocC);
+        searchDocumentIndexer.index(filterDocD);
+
+        elasticsearchClient.indices().refresh(r -> r.index("search-documents"));
+
+        // Filter by language = en
+        SearchResponse langEnResp = searchService.search("UniqueFilterKeyword", "en", null, null, null, null, 0, 10, "relevance");
+        assertThat(langEnResp.results()).extracting("urlHash").containsExactlyInAnyOrder("filter-a", "filter-c", "filter-d");
+
+        // Filter by language = en AND contentType = text/html
+        SearchResponse langAndTypeResp = searchService.search("UniqueFilterKeyword", "en", "text/html", null, null, null, 0, 10, "relevance");
+        assertThat(langAndTypeResp.results()).extracting("urlHash").containsExactlyInAnyOrder("filter-a", "filter-d");
+
+        // Filter by language = en AND statusCode = 200
+        SearchResponse langAndStatusResp = searchService.search("UniqueFilterKeyword", "en", null, 200, null, null, 0, 10, "relevance");
+        assertThat(langAndStatusResp.results()).extracting("urlHash").containsExactlyInAnyOrder("filter-a", "filter-c");
+
+        // Filter by language = en AND statusCode = 200 AND contentType = text/html
+        SearchResponse allFiltersResp = searchService.search("UniqueFilterKeyword", "en", "text/html", 200, null, null, 0, 10, "relevance");
+        assertThat(allFiltersResp.results()).extracting("urlHash").containsExactly("filter-a");
+
+        // Date range filter matching window
+        SearchResponse dateMatchResp = searchService.search("UniqueFilterKeyword", null, null, null, "2026-08-01T00:00:00Z", "2026-08-10T00:00:00Z", 0, 10, "relevance");
+        assertThat(dateMatchResp.results()).extracting("urlHash").containsExactlyInAnyOrder("filter-a", "filter-b", "filter-c", "filter-d");
+
+        // Date range filter excluding window
+        SearchResponse dateNoMatchResp = searchService.search("UniqueFilterKeyword", null, null, null, "2026-08-15T00:00:00Z", "2026-08-20T00:00:00Z", 0, 10, "relevance");
+        assertThat(dateNoMatchResp.results()).isEmpty();
     }
 }

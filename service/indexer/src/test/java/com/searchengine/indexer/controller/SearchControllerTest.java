@@ -56,7 +56,7 @@ class SearchControllerTest {
         );
         SearchResponse response = new SearchResponse("spring", 1L, 0, 10, 1, "relevance", List.of(result));
 
-        given(searchService.search("spring", 0, 10, "relevance")).willReturn(response);
+        given(searchService.search("spring", null, null, null, null, null, 0, 10, "relevance")).willReturn(response);
 
         mockMvc.perform(get("/api/search").param("q", "spring"))
                 .andExpect(status().isOk())
@@ -75,6 +75,37 @@ class SearchControllerTest {
                 .andExpect(jsonPath("$.results[0].wordCount").value(450))
                 .andExpect(jsonPath("$.results[0].statusCode").value(200))
                 .andExpect(jsonPath("$.results[0].highlights.title[0]").value("<em>Spring Framework</em>"));
+    }
+
+    @Test
+    void search_withFilters_passesFilterParametersToServiceAndReturns200() throws Exception {
+        SearchResponse response = new SearchResponse("spring", 1L, 0, 10, 1, "relevance", List.of());
+        given(searchService.search("spring", "en", "text/html", 200, "2026-08-01T00:00:00Z", "2026-08-14T23:59:59Z", 0, 10, "relevance"))
+                .willReturn(response);
+
+        mockMvc.perform(get("/api/search")
+                        .param("q", "spring")
+                        .param("language", "en")
+                        .param("contentType", "text/html")
+                        .param("statusCode", "200")
+                        .param("fromDate", "2026-08-01T00:00:00Z")
+                        .param("toDate", "2026-08-14T23:59:59Z"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.query").value("spring"))
+                .andExpect(jsonPath("$.totalHits").value(1));
+    }
+
+    @Test
+    void search_fromDateAfterToDate_returns400() throws Exception {
+        given(searchService.search("spring", null, null, null, "2026-08-15T00:00:00Z", "2026-08-14T00:00:00Z", 0, 10, "relevance"))
+                .willThrow(new IllegalArgumentException("fromDate must not be after toDate"));
+
+        mockMvc.perform(get("/api/search")
+                        .param("q", "spring")
+                        .param("fromDate", "2026-08-15T00:00:00Z")
+                        .param("toDate", "2026-08-14T00:00:00Z"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("fromDate must not be after toDate"));
     }
 
     @Test
@@ -134,7 +165,7 @@ class SearchControllerTest {
     @Test
     void search_untrimmedQuery_delegatesTrimmedQueryToService() throws Exception {
         SearchResponse response = new SearchResponse("Spring Boot", 1L, 0, 10, 1, "relevance", List.of());
-        given(searchService.search("   Spring Boot   ", 0, 10, "relevance")).willReturn(response);
+        given(searchService.search("   Spring Boot   ", null, null, null, null, null, 0, 10, "relevance")).willReturn(response);
 
         mockMvc.perform(get("/api/search").param("q", "   Spring Boot   "))
                 .andExpect(status().isOk())
@@ -144,7 +175,7 @@ class SearchControllerTest {
     @Test
     void search_explicitPageAndSize_returns200() throws Exception {
         SearchResponse response = new SearchResponse("spring", 25L, 1, 20, 2, "relevance", List.of());
-        given(searchService.search("spring", 1, 20, "relevance")).willReturn(response);
+        given(searchService.search("spring", null, null, null, null, null, 1, 20, "relevance")).willReturn(response);
 
         mockMvc.perform(get("/api/search")
                         .param("q", "spring")
@@ -163,7 +194,7 @@ class SearchControllerTest {
     @Test
     void search_zeroResults_returns200AndTotalPages0() throws Exception {
         SearchResponse response = new SearchResponse("nonexistent", 0L, 0, 10, 0, "relevance", List.of());
-        given(searchService.search("nonexistent", 0, 10, "relevance")).willReturn(response);
+        given(searchService.search("nonexistent", null, null, null, null, null, 0, 10, "relevance")).willReturn(response);
 
         mockMvc.perform(get("/api/search").param("q", "nonexistent"))
                 .andExpect(status().isOk())
@@ -175,7 +206,7 @@ class SearchControllerTest {
 
     @Test
     void search_negativePage_returns400() throws Exception {
-        given(searchService.search("spring", -1, 10, "relevance"))
+        given(searchService.search("spring", null, null, null, null, null, -1, 10, "relevance"))
                 .willThrow(new IllegalArgumentException("Page must be greater than or equal to 0"));
 
         mockMvc.perform(get("/api/search").param("q", "spring").param("page", "-1"))
@@ -185,7 +216,7 @@ class SearchControllerTest {
 
     @Test
     void search_sizeZero_returns400() throws Exception {
-        given(searchService.search("spring", 0, 0, "relevance"))
+        given(searchService.search("spring", null, null, null, null, null, 0, 0, "relevance"))
                 .willThrow(new IllegalArgumentException("Page size must be between 1 and 50"));
 
         mockMvc.perform(get("/api/search").param("q", "spring").param("size", "0"))
@@ -195,7 +226,7 @@ class SearchControllerTest {
 
     @Test
     void search_sizeExceedsMaximum_returns400() throws Exception {
-        given(searchService.search("spring", 0, 51, "relevance"))
+        given(searchService.search("spring", null, null, null, null, null, 0, 51, "relevance"))
                 .willThrow(new IllegalArgumentException("Page size must be between 1 and 50"));
 
         mockMvc.perform(get("/api/search").param("q", "spring").param("size", "51"))
@@ -205,7 +236,7 @@ class SearchControllerTest {
 
     @Test
     void search_invalidSort_returns400() throws Exception {
-        given(searchService.search("spring", 0, 10, "invalid_sort"))
+        given(searchService.search("spring", null, null, null, null, null, 0, 10, "invalid_sort"))
                 .willThrow(new IllegalArgumentException("Unsupported sort option: invalid_sort"));
 
         mockMvc.perform(get("/api/search").param("q", "spring").param("sort", "invalid_sort"))
@@ -215,7 +246,7 @@ class SearchControllerTest {
 
     @Test
     void search_blankQuery_returns400() throws Exception {
-        given(searchService.search("   ", 0, 10, "relevance"))
+        given(searchService.search("   ", null, null, null, null, null, 0, 10, "relevance"))
                 .willThrow(new IllegalArgumentException("Search query must not be blank"));
 
         mockMvc.perform(get("/api/search").param("q", "   "))
@@ -226,7 +257,7 @@ class SearchControllerTest {
     @Test
     void search_oversizedQuery_returns400() throws Exception {
         String longQuery = "a".repeat(201);
-        given(searchService.search(longQuery, 0, 10, "relevance"))
+        given(searchService.search(longQuery, null, null, null, null, null, 0, 10, "relevance"))
                 .willThrow(new IllegalArgumentException("Search query exceeds maximum allowed length"));
 
         mockMvc.perform(get("/api/search").param("q", longQuery))
@@ -236,7 +267,7 @@ class SearchControllerTest {
 
     @Test
     void search_elasticsearchFailure_returns503() throws Exception {
-        given(searchService.search("java", 0, 10, "relevance"))
+        given(searchService.search("java", null, null, null, null, null, 0, 10, "relevance"))
                 .willThrow(new SearchQueryException("Search query failed", new RuntimeException("ES down")));
 
         mockMvc.perform(get("/api/search").param("q", "java"))
