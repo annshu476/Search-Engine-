@@ -38,6 +38,8 @@ indexer:
       headings-boost: ${SEARCH_HEADINGS_BOOST:3.0}
       meta-description-boost: ${SEARCH_META_DESCRIPTION_BOOST:2.0}
       body-boost: ${SEARCH_BODY_BOOST:1.0}
+      phrase-boost: ${SEARCH_RELEVANCE_PHRASE_BOOST:2.0}
+      title-phrase-boost: ${SEARCH_RELEVANCE_TITLE_PHRASE_BOOST:4.0}
     fuzzy:
       enabled: ${SEARCH_FUZZY_ENABLED:true}
       fuzziness: ${SEARCH_FUZZINESS:AUTO}

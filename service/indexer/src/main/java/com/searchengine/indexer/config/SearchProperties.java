@@ -28,6 +28,8 @@ public class SearchProperties {
         private double headingsBoost = 3.0;
         private double metaDescriptionBoost = 2.0;
         private double bodyBoost = 1.0;
+        private double phraseBoost = 2.0;
+        private double titlePhraseBoost = 4.0;
     }
 
     @Getter
@@ -68,6 +70,12 @@ public class SearchProperties {
         }
         if (relevance.getBodyBoost() <= 0) {
             throw new IllegalStateException("Body boost must be greater than 0");
+        }
+        if (relevance.getPhraseBoost() <= 0) {
+            throw new IllegalStateException("Phrase boost must be greater than 0");
+        }
+        if (relevance.getTitlePhraseBoost() <= 0) {
+            throw new IllegalStateException("Title phrase boost must be greater than 0");
         }
         if (fuzzy.isEnabled() && (fuzzy.getFuzziness() == null || fuzzy.getFuzziness().isBlank())) {
             throw new IllegalStateException("Fuzziness configuration must not be null or blank when fuzzy search is enabled");

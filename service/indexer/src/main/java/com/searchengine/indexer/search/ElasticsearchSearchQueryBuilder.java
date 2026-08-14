@@ -6,6 +6,7 @@ import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch._types.query_dsl.TextQueryType;
 import co.elastic.clients.elasticsearch.core.search.Highlight;
 import co.elastic.clients.elasticsearch.core.search.HighlightField;
+import co.elastic.clients.json.JsonData;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -46,10 +47,56 @@ public class ElasticsearchSearchQueryBuilder {
         );
     }
 
+    public Query buildRelevanceQuery(String queryText) {
+        String trimmedQuery = queryText.trim();
+        String[] tokens = trimmedQuery.split("\\s+");
+
+        Query baselineQuery = buildMultiMatchQuery(trimmedQuery);
+        if (tokens.length <= 1) {
+            return baselineQuery;
+        }
+
+        SearchProperties.Relevance relevance = searchProperties.getRelevance();
+        double pBoost = relevance.getPhraseBoost();
+
+        List<String> phraseFields = List.of(
+                "title^" + (relevance.getTitleBoost() * pBoost),
+                "headings^" + (relevance.getHeadingsBoost() * pBoost),
+                "metaDescription^" + (relevance.getMetaDescriptionBoost() * pBoost),
+                "bodyText^" + (relevance.getBodyBoost() * pBoost)
+        );
+
+        Query phraseMultiMatchQuery = Query.of(q -> q
+                .multiMatch(m -> m
+                        .query(trimmedQuery)
+                        .fields(phraseFields)
+                        .type(TextQueryType.Phrase)
+                )
+        );
+
+        float tPhraseBoost = (float) relevance.getTitlePhraseBoost();
+        Query titlePhraseQuery = Query.of(q -> q
+                .matchPhrase(m -> m
+                        .field("title")
+                        .query(trimmedQuery)
+                        .boost(tPhraseBoost)
+                )
+        );
+
+        return Query.of(q -> q
+                .bool(b -> b
+                        .should(baselineQuery)
+                        .should(phraseMultiMatchQuery)
+                        .should(titlePhraseQuery)
+                        .minimumShouldMatch("1")
+                )
+        );
+    }
+
     public Query buildSearchQuery(String queryText, SearchFilter filter) {
-        Query fullTextQuery = buildMultiMatchQuery(queryText);
+        Query relevanceQuery = buildRelevanceQuery(queryText);
         if (filter == null || !filter.hasFilters()) {
-            return fullTextQuery;
+            return relevanceQuery;
         }
 
         List<Query> filterQueries = new ArrayList<>();
@@ -80,11 +127,11 @@ public class ElasticsearchSearchQueryBuilder {
         }
 
         if (filterQueries.isEmpty()) {
-            return fullTextQuery;
+            return relevanceQuery;
         }
 
         return Query.of(q -> q.bool(b -> b
-                .must(fullTextQuery)
+                .must(relevanceQuery)
                 .filter(filterQueries)
         ));
     }

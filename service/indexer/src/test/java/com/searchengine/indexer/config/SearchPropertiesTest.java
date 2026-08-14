@@ -26,6 +26,8 @@ class SearchPropertiesTest {
         assertThat(relevance.getHeadingsBoost()).isEqualTo(3.0);
         assertThat(relevance.getMetaDescriptionBoost()).isEqualTo(2.0);
         assertThat(relevance.getBodyBoost()).isEqualTo(1.0);
+        assertThat(relevance.getPhraseBoost()).isEqualTo(2.0);
+        assertThat(relevance.getTitlePhraseBoost()).isEqualTo(4.0);
 
         SearchProperties.Fuzzy fuzzy = searchProperties.getFuzzy();
         assertThat(fuzzy.isEnabled()).isTrue();
@@ -52,6 +54,24 @@ class SearchPropertiesTest {
 
         assertThat(suggestions.getMaxResults()).isEqualTo(15);
         assertThat(suggestions.getMinPrefixLength()).isEqualTo(3);
+    }
+
+    @Test
+    void validateProperties_invalidPhraseBoostZero_throwsIllegalStateException() {
+        searchProperties.getRelevance().setPhraseBoost(0.0);
+
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Phrase boost must be greater than 0");
+    }
+
+    @Test
+    void validateProperties_invalidTitlePhraseBoostZero_throwsIllegalStateException() {
+        searchProperties.getRelevance().setTitlePhraseBoost(0.0);
+
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Title phrase boost must be greater than 0");
     }
 
     @Test

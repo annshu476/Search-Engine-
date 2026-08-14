@@ -39,7 +39,7 @@ class SearchDocumentIndexerIntegrationTest {
     private SearchSuggestionService searchSuggestionService;
 
     @Test
-    void endToEndElasticsearchIndexingPaginationRelevanceFuzzyHighlightingSuggestionsAndFilters() throws Exception {
+    void endToEndElasticsearchIndexingPaginationRelevanceFuzzyHighlightingSuggestionsFiltersAndPhraseMatching() throws Exception {
         // 1. Verify index created by initializer
         indexInitializer.initializeIndex();
         boolean indexExists = elasticsearchClient.indices().exists(e -> e.index("search-documents")).value();
@@ -122,7 +122,7 @@ class SearchDocumentIndexerIntegrationTest {
         SearchResponse page0 = searchService.search("pagination", 0, 1, "newest");
         assertThat(page0.totalHits()).isGreaterThanOrEqualTo(2L);
 
-        // 7. Test Field Weighting Relevance Ranking
+        // 7. Test Field Weighting & Phrase Relevance Ranking (Feature 11)
         SearchDocument relDocA = new SearchDocument(
                 "https://searchengine.org/relA", "https://searchengine.org/relA", "hash-rel-a",
                 "Spring Boot Framework Overview", "Guide to Spring", List.of("Spring Boot Tutorial"),
@@ -211,5 +211,45 @@ class SearchDocumentIndexerIntegrationTest {
         // Date range filter excluding window
         SearchResponse dateNoMatchResp = searchService.search("UniqueFilterKeyword", null, null, null, "2026-08-15T00:00:00Z", "2026-08-20T00:00:00Z", 0, 10, "relevance");
         assertThat(dateNoMatchResp.results()).isEmpty();
+
+        // 10. Test Feature 11 Phrase Matching Relevance Ranking
+        SearchDocument phraseDocTitle = new SearchDocument(
+                "https://searchengine.org/phrase-title", "https://searchengine.org/phrase-title", "hash-phrase-title",
+                "Spring Boot Framework", "Overview of Spring Boot", List.of("Spring"),
+                "Java framework information", "en", 200, 200, "text/html", now, now
+        );
+
+        SearchDocument phraseDocBody = new SearchDocument(
+                "https://searchengine.org/phrase-body", "https://searchengine.org/phrase-body", "hash-phrase-body",
+                "Java Framework Guide", "Introduction to frameworks", List.of("Java"),
+                "This article explains Spring Boot framework concepts.", "en", 200, 200, "text/html", now, now
+        );
+
+        SearchDocument phraseDocSeparated = new SearchDocument(
+                "https://searchengine.org/phrase-sep", "https://searchengine.org/phrase-sep", "hash-phrase-sep",
+                "Spring Guide", "Boot configuration guide", List.of("Spring"),
+                "Boot configuration and deployment information.", "en", 200, 200, "text/html", now, now
+        );
+
+        searchDocumentIndexer.index(phraseDocTitle);
+        searchDocumentIndexer.index(phraseDocBody);
+        searchDocumentIndexer.index(phraseDocSeparated);
+
+        elasticsearchClient.indices().refresh(r -> r.index("search-documents"));
+
+        SearchResponse phraseRelevanceResp = searchService.search("spring boot", 0, 10, "relevance");
+        assertThat(phraseRelevanceResp.results()).isNotEmpty();
+        // Exact title phrase must rank first
+        assertThat(phraseRelevanceResp.results().get(0).urlHash()).isEqualTo("hash-phrase-title");
+
+        // 11. Test Fuzzy typo fallback with phrase query
+        SearchResponse fuzzyTypoResp = searchService.search("sprng boot", 0, 10, "relevance");
+        assertThat(fuzzyTypoResp.results()).isNotEmpty();
+        assertThat(fuzzyTypoResp.results()).extracting("urlHash").contains("hash-phrase-title");
+
+        // 12. Test Filter + Phrase Integration
+        SearchResponse filterPhraseResp = searchService.search("spring boot", "en", "text/html", 200, null, null, 0, 10, "relevance");
+        assertThat(filterPhraseResp.results()).isNotEmpty();
+        assertThat(filterPhraseResp.results().get(0).urlHash()).isEqualTo("hash-phrase-title");
     }
 }
