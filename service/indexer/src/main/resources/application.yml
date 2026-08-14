@@ -33,6 +33,11 @@ indexer:
     max-results: ${SEARCH_MAX_RESULTS:10}
     max-page-size: ${SEARCH_MAX_PAGE_SIZE:50}
     max-query-length: ${SEARCH_MAX_QUERY_LENGTH:200}
+    relevance:
+      title-boost: ${SEARCH_TITLE_BOOST:4.0}
+      headings-boost: ${SEARCH_HEADINGS_BOOST:3.0}
+      meta-description-boost: ${SEARCH_META_DESCRIPTION_BOOST:2.0}
+      body-boost: ${SEARCH_BODY_BOOST:1.0}
 
 elasticsearch:
   url: ${ELASTICSEARCH_URL:http://localhost:9200}

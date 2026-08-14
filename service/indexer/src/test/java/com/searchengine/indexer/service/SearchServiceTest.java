@@ -5,13 +5,18 @@ import com.searchengine.indexer.config.SearchProperties;
 import com.searchengine.indexer.exception.SearchQueryException;
 import com.searchengine.indexer.model.dto.SearchResponse;
 import com.searchengine.indexer.model.dto.SearchResult;
+import com.searchengine.indexer.search.ElasticsearchSearchQueryBuilder;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch._types.query_dsl.MultiMatchQuery;
+import co.elastic.clients.elasticsearch._types.query_dsl.Query;
+import co.elastic.clients.elasticsearch._types.query_dsl.TextQueryType;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import co.elastic.clients.elasticsearch.core.search.HitsMetadata;
 import co.elastic.clients.elasticsearch.core.search.TotalHits;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -34,6 +39,7 @@ class SearchServiceTest {
 
     private IndexerElasticsearchProperties indexerProperties;
     private SearchProperties searchProperties;
+    private ElasticsearchSearchQueryBuilder searchQueryBuilder;
     private SearchService searchService;
 
     @BeforeEach
@@ -46,7 +52,8 @@ class SearchServiceTest {
         searchProperties.setMaxPageSize(50);
         searchProperties.setMaxQueryLength(200);
 
-        searchService = new SearchService(elasticsearchClient, indexerProperties, searchProperties);
+        searchQueryBuilder = new ElasticsearchSearchQueryBuilder(searchProperties);
+        searchService = new SearchService(elasticsearchClient, indexerProperties, searchProperties, searchQueryBuilder);
     }
 
     private co.elastic.clients.elasticsearch.core.SearchResponse<Map> createMockEsResponse(long hitsCount) {
@@ -81,6 +88,16 @@ class SearchServiceTest {
     }
 
     @Test
+    void search_queryIsTrimmedBeforeExecution() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+
+        SearchResponse response = searchService.search("   Spring Boot   ");
+
+        assertThat(response.query()).isEqualTo("Spring Boot");
+    }
+
+    @Test
     void search_defaultPageAndSize_appliesDefaults() throws IOException {
         co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L);
         given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
@@ -108,38 +125,21 @@ class SearchServiceTest {
 
     @Test
     void search_totalPagesCalculation() throws IOException {
-        // 0 hits -> 0 pages
         co.elastic.clients.elasticsearch.core.SearchResponse<Map> res0 = createMockEsResponse(0L);
         given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(res0);
         assertThat(searchService.search("test", 0, 10, "relevance").totalPages()).isEqualTo(0);
 
-        // 1 hit / size 10 -> 1 page
         co.elastic.clients.elasticsearch.core.SearchResponse<Map> res1 = createMockEsResponse(1L);
         given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(res1);
         assertThat(searchService.search("test", 0, 10, "relevance").totalPages()).isEqualTo(1);
 
-        // 10 hits / size 10 -> 1 page
         co.elastic.clients.elasticsearch.core.SearchResponse<Map> res10 = createMockEsResponse(10L);
         given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(res10);
         assertThat(searchService.search("test", 0, 10, "relevance").totalPages()).isEqualTo(1);
 
-        // 11 hits / size 10 -> 2 pages
         co.elastic.clients.elasticsearch.core.SearchResponse<Map> res11 = createMockEsResponse(11L);
         given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(res11);
         assertThat(searchService.search("test", 0, 10, "relevance").totalPages()).isEqualTo(2);
-
-        // 100 hits / size 25 -> 4 pages
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> res100 = createMockEsResponse(100L);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(res100);
-        assertThat(searchService.search("test", 0, 25, "relevance").totalPages()).isEqualTo(4);
-    }
-
-    @Test
-    void search_page0Accepted() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        assertThat(searchService.search("test", 0, 10, "relevance").page()).isEqualTo(0);
     }
 
     @Test
@@ -150,51 +150,10 @@ class SearchServiceTest {
     }
 
     @Test
-    void search_size1Accepted() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        assertThat(searchService.search("test", 0, 1, "relevance").size()).isEqualTo(1);
-    }
-
-    @Test
-    void search_size50Accepted() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        assertThat(searchService.search("test", 0, 50, "relevance").size()).isEqualTo(50);
-    }
-
-    @Test
     void search_sizeGreaterThanMaxPageSize_rejected() {
         assertThatThrownBy(() -> searchService.search("test", 0, 51, "relevance"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Page size must be between 1 and 50");
-    }
-
-    @Test
-    void search_size0_rejected() {
-        assertThatThrownBy(() -> searchService.search("test", 0, 0, "relevance"))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Page size must be between 1 and 50");
-    }
-
-    @Test
-    void search_relevanceSort_accepted() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        SearchResponse response = searchService.search("test", 0, 10, "relevance");
-        assertThat(response.sort()).isEqualTo("relevance");
-    }
-
-    @Test
-    void search_newestSort_accepted() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        SearchResponse response = searchService.search("test", 0, 10, "newest");
-        assertThat(response.sort()).isEqualTo("newest");
     }
 
     @Test

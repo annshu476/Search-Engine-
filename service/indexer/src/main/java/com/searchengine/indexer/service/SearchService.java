@@ -5,8 +5,10 @@ import com.searchengine.indexer.config.SearchProperties;
 import com.searchengine.indexer.exception.SearchQueryException;
 import com.searchengine.indexer.model.dto.SearchResponse;
 import com.searchengine.indexer.model.dto.SearchResult;
+import com.searchengine.indexer.search.ElasticsearchSearchQueryBuilder;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.SortOrder;
+import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -24,6 +26,7 @@ public class SearchService {
     private final ElasticsearchClient elasticsearchClient;
     private final IndexerElasticsearchProperties indexerElasticsearchProperties;
     private final SearchProperties searchProperties;
+    private final ElasticsearchSearchQueryBuilder searchQueryBuilder;
 
     public SearchResponse search(String query) {
         return search(query, 0, searchProperties.getMaxResults(), "relevance");
@@ -59,18 +62,14 @@ public class SearchService {
         int from = (int) fromOffset;
 
         String indexName = indexerElasticsearchProperties.getIndexName();
+        Query esQuery = searchQueryBuilder.buildMultiMatchQuery(trimmedQuery);
 
         try {
             co.elastic.clients.elasticsearch.core.SearchResponse<Map> esResponse = elasticsearchClient.search(s -> {
                 s.index(indexName)
                         .from(from)
                         .size(size)
-                        .query(q -> q
-                                .multiMatch(m -> m
-                                        .query(trimmedQuery)
-                                        .fields("title", "metaDescription", "headings", "bodyText")
-                                )
-                        );
+                        .query(esQuery);
 
                 if ("newest".equals(normalizedSort)) {
                     s.sort(so -> so.field(f -> f.field("indexedAt").order(SortOrder.Desc)))

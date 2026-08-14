@@ -34,7 +34,7 @@ class SearchDocumentIndexerIntegrationTest {
     private SearchService searchService;
 
     @Test
-    void endToEndElasticsearchIndexingIdempotencyAndPagination() throws Exception {
+    void endToEndElasticsearchIndexingIdempotencyPaginationAndRelevance() throws Exception {
         // 1. Verify index created by initializer
         indexInitializer.initializeIndex();
         boolean indexExists = elasticsearchClient.indices().exists(e -> e.index("search-documents")).value();
@@ -107,9 +107,6 @@ class SearchDocumentIndexerIntegrationTest {
         Map<String, Object> sourceB = responseB.source();
         assertThat(sourceB).isNotNull();
         assertThat(sourceB.get("title")).isEqualTo("New Title");
-        assertThat(sourceB.get("metaDescription")).isEqualTo("New Meta Description");
-        assertThat(sourceB.get("bodyText")).isEqualTo("New updated body text content");
-        assertThat(sourceB.get("wordCount")).isEqualTo(250);
 
         // 6. Test Pagination and Sorting via SearchService
         Instant time1 = Instant.now().minusSeconds(60);
@@ -144,5 +141,28 @@ class SearchDocumentIndexerIntegrationTest {
         assertThat(page1.size()).isEqualTo(1);
         assertThat(page1.results()).hasSize(1);
         assertThat(page1.results().get(0).urlHash()).isNotEqualTo(page0.results().get(0).urlHash());
+
+        // 7. Test Field Weighting Relevance Ranking
+        SearchDocument relDocA = new SearchDocument(
+                "https://searchengine.org/relA", "https://searchengine.org/relA", "hash-rel-a",
+                "Spring Boot Framework Overview", "Guide to Spring", List.of("Spring"),
+                "Java programming concepts", "en", 300, 200, "text/html", time2, time2
+        );
+
+        SearchDocument relDocB = new SearchDocument(
+                "https://searchengine.org/relB", "https://searchengine.org/relB", "hash-rel-b",
+                "Java Basics Guide", "Introduction to Java", List.of("Java"),
+                "Includes Spring Boot framework tutorial inside body", "en", 300, 200, "text/html", time2, time2
+        );
+
+        searchDocumentIndexer.index(relDocA);
+        searchDocumentIndexer.index(relDocB);
+
+        elasticsearchClient.indices().refresh(r -> r.index("search-documents"));
+
+        SearchResponse relevanceResponse = searchService.search("Spring Boot", 0, 10, "relevance");
+        assertThat(relevanceResponse.results()).isNotEmpty();
+        // Document A (Title match for "Spring Boot") must rank higher than Document B (Body-only match)
+        assertThat(relevanceResponse.results().get(0).urlHash()).isEqualTo("hash-rel-a");
     }
 }

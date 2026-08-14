@@ -69,6 +69,16 @@ class SearchControllerTest {
     }
 
     @Test
+    void search_untrimmedQuery_delegatesTrimmedQueryToService() throws Exception {
+        SearchResponse response = new SearchResponse("Spring Boot", 1L, 0, 10, 1, "relevance", List.of());
+        given(searchService.search("   Spring Boot   ", 0, 10, "relevance")).willReturn(response);
+
+        mockMvc.perform(get("/api/search").param("q", "   Spring Boot   "))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.query").value("Spring Boot"));
+    }
+
+    @Test
     void search_explicitPageAndSize_returns200() throws Exception {
         SearchResponse response = new SearchResponse("spring", 25L, 1, 20, 2, "relevance", List.of());
         given(searchService.search("spring", 1, 20, "relevance")).willReturn(response);
