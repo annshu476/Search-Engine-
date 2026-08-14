@@ -19,6 +19,7 @@ public class SearchProperties {
     private Relevance relevance = new Relevance();
     private Fuzzy fuzzy = new Fuzzy();
     private Highlight highlight = new Highlight();
+    private Suggestions suggestions = new Suggestions();
 
     @Getter
     @Setter
@@ -44,6 +45,14 @@ public class SearchProperties {
         private int numberOfFragments = 2;
         private String preTag = "<em>";
         private String postTag = "</em>";
+    }
+
+    @Getter
+    @Setter
+    public static class Suggestions {
+        private boolean enabled = true;
+        private int maxResults = 8;
+        private int minPrefixLength = 2;
     }
 
     @PostConstruct
@@ -75,6 +84,14 @@ public class SearchProperties {
             }
             if (highlight.getPostTag() == null || highlight.getPostTag().isBlank()) {
                 throw new IllegalStateException("Highlight postTag must not be null or blank when highlighting is enabled");
+            }
+        }
+        if (suggestions.isEnabled()) {
+            if (suggestions.getMaxResults() <= 0 || suggestions.getMaxResults() > 20) {
+                throw new IllegalStateException("Suggestions max-results must be between 1 and 20");
+            }
+            if (suggestions.getMinPrefixLength() < 1 || suggestions.getMinPrefixLength() > maxQueryLength) {
+                throw new IllegalStateException("Suggestions min-prefix-length must be between 1 and " + maxQueryLength);
             }
         }
     }

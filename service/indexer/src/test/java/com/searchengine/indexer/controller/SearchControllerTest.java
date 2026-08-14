@@ -1,11 +1,14 @@
 package com.searchengine.indexer.controller;
 
 import com.searchengine.indexer.exception.SearchQueryException;
+import com.searchengine.indexer.exception.SearchSuggestionException;
 import com.searchengine.indexer.health.ElasticsearchHealthIndicator;
 import com.searchengine.indexer.initializer.SearchDocumentIndexInitializer;
 import com.searchengine.indexer.model.dto.SearchResponse;
 import com.searchengine.indexer.model.dto.SearchResult;
+import com.searchengine.indexer.model.dto.SearchSuggestionResponse;
 import com.searchengine.indexer.service.SearchService;
+import com.searchengine.indexer.service.SearchSuggestionService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -28,6 +31,9 @@ class SearchControllerTest {
 
     @MockitoBean
     private SearchService searchService;
+
+    @MockitoBean
+    private SearchSuggestionService searchSuggestionService;
 
     @MockitoBean
     private ElasticsearchHealthIndicator elasticsearchHealthIndicator;
@@ -69,6 +75,60 @@ class SearchControllerTest {
                 .andExpect(jsonPath("$.results[0].wordCount").value(450))
                 .andExpect(jsonPath("$.results[0].statusCode").value(200))
                 .andExpect(jsonPath("$.results[0].highlights.title[0]").value("<em>Spring Framework</em>"));
+    }
+
+    @Test
+    void suggest_validPrefix_returns200AndJsonStructure() throws Exception {
+        SearchSuggestionResponse response = new SearchSuggestionResponse("spr", List.of("spring", "spring boot", "spring framework"));
+        given(searchSuggestionService.suggest("spr")).willReturn(response);
+
+        mockMvc.perform(get("/api/search/suggest").param("q", "spr"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.query").value("spr"))
+                .andExpect(jsonPath("$.suggestions[0]").value("spring"))
+                .andExpect(jsonPath("$.suggestions[1]").value("spring boot"))
+                .andExpect(jsonPath("$.suggestions[2]").value("spring framework"));
+    }
+
+    @Test
+    void suggest_blankQuery_returns400() throws Exception {
+        given(searchSuggestionService.suggest("   "))
+                .willThrow(new IllegalArgumentException("Search query must not be blank"));
+
+        mockMvc.perform(get("/api/search/suggest").param("q", "   "))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("Search query must not be blank"));
+    }
+
+    @Test
+    void suggest_oneCharacterPrefix_returns400() throws Exception {
+        given(searchSuggestionService.suggest("s"))
+                .willThrow(new IllegalArgumentException("Search prefix must contain at least 2 characters"));
+
+        mockMvc.perform(get("/api/search/suggest").param("q", "s"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("Search prefix must contain at least 2 characters"));
+    }
+
+    @Test
+    void suggest_oversizedQuery_returns400() throws Exception {
+        String longQuery = "a".repeat(201);
+        given(searchSuggestionService.suggest(longQuery))
+                .willThrow(new IllegalArgumentException("Search query exceeds maximum allowed length"));
+
+        mockMvc.perform(get("/api/search/suggest").param("q", longQuery))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("Search query exceeds maximum allowed length"));
+    }
+
+    @Test
+    void suggest_elasticsearchFailure_returns503() throws Exception {
+        given(searchSuggestionService.suggest("spr"))
+                .willThrow(new SearchSuggestionException("Search suggestion service temporarily unavailable", new RuntimeException("ES down")));
+
+        mockMvc.perform(get("/api/search/suggest").param("q", "spr"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.error").value("Search suggestion service temporarily unavailable"));
     }
 
     @Test

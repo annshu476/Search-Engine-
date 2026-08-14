@@ -1,6 +1,6 @@
 # Indexer Service
 
-The **Indexer Service** is Service 3 in the Search Engine pipeline. Its primary role is to consume processed document content from Kafka (`search-document-topic`), index the documents into Elasticsearch using explicit mappings, and expose a REST Search API for querying indexed content with field-weighted relevance scoring, fuzzy typo tolerance, search result highlighting, pagination, and sorting support.
+The **Indexer Service** is Service 3 in the Search Engine pipeline. Its primary role is to consume processed document content from Kafka (`search-document-topic`), index the documents into Elasticsearch using explicit mappings, and expose REST Search APIs for querying indexed content with field-weighted relevance scoring, fuzzy typo tolerance, search result highlighting, search suggestions / autocomplete, pagination, and sorting support.
 
 ---
 
@@ -26,10 +26,8 @@ IndexerService
 SearchDocumentIndexer
     ↓
 Elasticsearch (search-documents)
-    ↓
-SearchService
-    ↓
-SearchController (GET /api/search?q={query}&page={page}&size={size}&sort={sort})
+    ├── SearchService           → GET /api/search?q={query}&page={page}&size={size}&sort={sort}
+    └── SearchSuggestionService → GET /api/search/suggest?q={prefix}
 ```
 
 ---
@@ -98,8 +96,16 @@ SearchController (GET /api/search?q={query}&page={page}&size={size}&sort={sort})
 - Returns `"highlights": {}` when no fragments are returned or when highlighting is disabled.
 - Presentation metadata only: Highlighting does NOT alter Elasticsearch BM25 relevance scoring or result ordering.
 
+### Feature 9 — Search Suggestions / Autocomplete
+- Exposes a dedicated `GET /api/search/suggest?q={prefix}` REST endpoint for prefix suggestions.
+- Queries `search-documents` index using Elasticsearch `phrase_prefix` multi-match across `title^4.0`, `headings^3.0`, and `metaDescription^2.0` (excluding raw `bodyText`).
+- Enforces a minimum prefix length of 2 characters (`min-prefix-length: 2`).
+- Returns clean `SearchSuggestionResponse` DTO containing `query` and `suggestions` list (`List<String>`).
+- Normalizes and deduplicates candidates deterministically while respecting `max-results: 8`.
+- Independent service boundary (`SearchSuggestionService`) preserving `/api/search` functionality unchanged.
+
 > [!NOTE]
-> **Intentionally NOT implemented yet**: Autocomplete, spell correction, synonyms, query suggestions, or semantic/vector search.
+> **Intentionally NOT implemented yet**: Spell correction, synonyms, semantic/vector search, query history, or personalized recommendations.
 
 ---
 
@@ -112,16 +118,17 @@ service/indexer/src/main/java/com/searchengine/indexer/
 │   ├── ElasticsearchConfig.java                # Bean definitions for RestClient, ElasticsearchTransport, and ElasticsearchClient
 │   ├── ElasticsearchProperties.java            # Connection configuration properties prefixed with 'elasticsearch'
 │   ├── IndexerElasticsearchProperties.java     # Index configuration properties prefixed with 'indexer.elasticsearch'
-│   └── SearchProperties.java                   # Search API configuration properties (max-results, max-page-size, max-query-length, relevance, fuzzy, highlight)
+│   └── SearchProperties.java                   # Search API configuration properties (max-results, max-page-size, max-query-length, relevance, fuzzy, highlight, suggestions)
 ├── consumer/
 │   └── SearchDocumentConsumer.java             # Kafka listener for search-document-topic using manual ACK
 ├── controller/
-│   └── SearchController.java                   # REST controller exposing GET /api/search?q={query}&page={page}&size={size}&sort={sort}
+│   └── SearchController.java                   # REST controller exposing GET /api/search and GET /api/search/suggest
 ├── exception/
 │   ├── ElasticsearchConfigurationException.java # Custom exception for invalid configuration/URLs
 │   ├── ElasticsearchIndexingException.java     # Custom exception for Elasticsearch indexing failures
 │   ├── SearchDocumentValidationException.java  # Exception thrown on SearchDocument contract validation failure
-│   └── SearchQueryException.java               # Custom exception for search query execution failures
+│   ├── SearchQueryException.java               # Custom exception for search query execution failures
+│   └── SearchSuggestionException.java         # Custom exception for search suggestion execution failures
 ├── health/
 │   └── ElasticsearchHealthIndicator.java        # Custom Spring Boot Actuator HealthIndicator for Elasticsearch ping
 ├── indexer/
@@ -132,15 +139,18 @@ service/indexer/src/main/java/com/searchengine/indexer/
 │   └── SearchDocumentMapper.java               # Maps SearchDocument records to Elasticsearch document Map
 ├── model/
 │   ├── dto/
-│   │   ├── SearchResponse.java                 # Search API response wrapper (query, totalHits, page, size, totalPages, sort, results)
-│   │   └── SearchResult.java                   # Individual search hit DTO (excludes bodyText, includes highlights map)
+│   │   ├── SearchResponse.java                 # Search API response wrapper
+│   │   ├── SearchResult.java                   # Individual search hit DTO (excludes bodyText, includes highlights map)
+│   │   └── SearchSuggestionResponse.java       # Suggestion API response DTO (query, suggestions list)
 │   └── kafka/
 │       └── SearchDocument.java                 # Exact V1 SearchDocument record contract
 ├── search/
-│   └── ElasticsearchSearchQueryBuilder.java   # Builds weighted best_fields multi-match queries with fuzziness and highlighting
+│   ├── ElasticsearchSearchQueryBuilder.java   # Builds weighted best_fields multi-match queries with fuzziness and highlighting
+│   └── ElasticsearchSuggestionQueryBuilder.java # Builds phrase_prefix multi-match queries for suggestions
 ├── service/
 │   ├── IndexerService.java                     # Domain service orchestrating document indexing
-│   └── SearchService.java                      # Service executing search queries with field weighting, fuzzy matching, highlighting, pagination, and sorting
+│   ├── SearchService.java                      # Service executing search queries
+│   └── SearchSuggestionService.java            # Service executing prefix suggestion queries
 └── validator/
     └── SearchDocumentValidator.java            # Validates SearchDocument required fields and bounds
 ```
@@ -174,50 +184,38 @@ Default Port: `8083`
 | `indexer.search.highlight.number-of-fragments` | `2` | `SEARCH_HIGHLIGHT_NUMBER_OF_FRAGMENTS` | Maximum highlight fragments per field |
 | `indexer.search.highlight.pre-tag` | `<em>` | `SEARCH_HIGHLIGHT_PRE_TAG` | Opening HTML highlight tag |
 | `indexer.search.highlight.post-tag` | `</em>` | `SEARCH_HIGHLIGHT_POST_TAG` | Closing HTML highlight tag |
+| `indexer.search.suggestions.enabled` | `true` | `SEARCH_SUGGESTIONS_ENABLED` | Enables search suggestions / autocomplete |
+| `indexer.search.suggestions.max-results` | `8` | `SEARCH_SUGGESTIONS_MAX_RESULTS` | Maximum number of suggestions returned |
+| `indexer.search.suggestions.min-prefix-length` | `2` | `SEARCH_SUGGESTIONS_MIN_PREFIX_LENGTH` | Minimum prefix characters required for suggest |
 | `elasticsearch.url` | `http://localhost:9200` | `ELASTICSEARCH_URL` | Target Elasticsearch endpoint URL |
 
 ---
 
-## Search API Specification
+## API Specification
 
-### Request Endpoint
+### Search Endpoint
 ```http
 GET /api/search?q={query}&page={page}&size={size}&sort={sort}
 ```
 
-### Example Request
+### Suggestion Endpoint
 ```http
-GET /api/search?q=spring%20boot&page=0&size=10&sort=relevance
+GET /api/search/suggest?q={prefix}
 ```
 
-### Example JSON Response
+### Example Suggestion Request
+```http
+GET /api/search/suggest?q=spr
+```
+
+### Example Suggestion Response
 ```json
 {
-  "query": "spring boot",
-  "totalHits": 1,
-  "page": 0,
-  "size": 10,
-  "totalPages": 1,
-  "sort": "relevance",
-  "results": [
-    {
-      "url": "https://spring.io",
-      "canonicalUrl": "https://spring.io",
-      "urlHash": "abc123hash",
-      "title": "Spring Boot Framework",
-      "metaDescription": "Build standalone Spring applications",
-      "language": "en",
-      "wordCount": 450,
-      "statusCode": 200,
-      "highlights": {
-        "title": [
-          "<em>Spring Boot</em> Framework"
-        ],
-        "bodyText": [
-          "Build production-ready applications with <em>Spring Boot</em>."
-        ]
-      }
-    }
+  "query": "spr",
+  "suggestions": [
+    "spring boot framework overview",
+    "spring boot tutorial",
+    "spring framework guide"
   ]
 }
 ```
@@ -240,5 +238,5 @@ Run real Elasticsearch integration tests:
 
 ## Planned Next Features
 
-- **Feature 9**: Kafka Retry Policy & Dead Letter Topic (DLT).
-- **Feature 10**: End-to-End Search Pipeline Verification.
+- **Feature 10**: Kafka Retry Policy & Dead Letter Topic (DLT).
+- **Feature 11**: End-to-End Search Pipeline Verification.

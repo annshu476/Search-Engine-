@@ -47,6 +47,10 @@ indexer:
       number-of-fragments: ${SEARCH_HIGHLIGHT_NUMBER_OF_FRAGMENTS:2}
       pre-tag: ${SEARCH_HIGHLIGHT_PRE_TAG:<em>}
       post-tag: ${SEARCH_HIGHLIGHT_POST_TAG:</em>}
+    suggestions:
+      enabled: ${SEARCH_SUGGESTIONS_ENABLED:true}
+      max-results: ${SEARCH_SUGGESTIONS_MAX_RESULTS:8}
+      min-prefix-length: ${SEARCH_SUGGESTIONS_MIN_PREFIX_LENGTH:2}
 
 elasticsearch:
   url: ${ELASTICSEARCH_URL:http://localhost:9200}
