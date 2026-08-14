@@ -31,6 +31,7 @@ indexer:
     search-document-topic: ${SEARCH_DOCUMENT_TOPIC:search-document-topic}
   search:
     max-results: ${SEARCH_MAX_RESULTS:10}
+    max-page-size: ${SEARCH_MAX_PAGE_SIZE:50}
     max-query-length: ${SEARCH_MAX_QUERY_LENGTH:200}
 
 elasticsearch:

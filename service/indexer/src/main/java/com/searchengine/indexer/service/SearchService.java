@@ -6,6 +6,7 @@ import com.searchengine.indexer.exception.SearchQueryException;
 import com.searchengine.indexer.model.dto.SearchResponse;
 import com.searchengine.indexer.model.dto.SearchResult;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -25,6 +26,10 @@ public class SearchService {
     private final SearchProperties searchProperties;
 
     public SearchResponse search(String query) {
+        return search(query, 0, searchProperties.getMaxResults(), "relevance");
+    }
+
+    public SearchResponse search(String query, int page, int size, String sort) {
         if (query == null || query.isBlank()) {
             throw new IllegalArgumentException("Search query must not be blank");
         }
@@ -34,22 +39,53 @@ public class SearchService {
             throw new IllegalArgumentException("Search query exceeds maximum allowed length");
         }
 
+        if (page < 0) {
+            throw new IllegalArgumentException("Page must be greater than or equal to 0");
+        }
+
+        if (size < 1 || size > searchProperties.getMaxPageSize()) {
+            throw new IllegalArgumentException("Page size must be between 1 and " + searchProperties.getMaxPageSize());
+        }
+
+        String normalizedSort = (sort == null || sort.isBlank()) ? "relevance" : sort.trim().toLowerCase();
+        if (!normalizedSort.equals("relevance") && !normalizedSort.equals("newest")) {
+            throw new IllegalArgumentException("Unsupported sort option: " + sort);
+        }
+
+        long fromOffset = (long) page * size;
+        if (fromOffset < 0 || fromOffset > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("Invalid page and size offset combination");
+        }
+        int from = (int) fromOffset;
+
         String indexName = indexerElasticsearchProperties.getIndexName();
 
         try {
-            co.elastic.clients.elasticsearch.core.SearchResponse<Map> esResponse = elasticsearchClient.search(s -> s
-                    .index(indexName)
-                    .size(searchProperties.getMaxResults())
-                    .query(q -> q
-                            .multiMatch(m -> m
-                                    .query(trimmedQuery)
-                                    .fields("title", "metaDescription", "headings", "bodyText")
-                            )
-                    ), Map.class);
+            co.elastic.clients.elasticsearch.core.SearchResponse<Map> esResponse = elasticsearchClient.search(s -> {
+                s.index(indexName)
+                        .from(from)
+                        .size(size)
+                        .query(q -> q
+                                .multiMatch(m -> m
+                                        .query(trimmedQuery)
+                                        .fields("title", "metaDescription", "headings", "bodyText")
+                                )
+                        );
+
+                if ("newest".equals(normalizedSort)) {
+                    s.sort(so -> so.field(f -> f.field("indexedAt").order(SortOrder.Desc)))
+                     .sort(so -> so.field(f -> f.field("urlHash").order(SortOrder.Asc)));
+                } else {
+                    s.sort(so -> so.score(sc -> sc.order(SortOrder.Desc)));
+                }
+
+                return s;
+            }, Map.class);
 
             long totalHits = esResponse.hits().total() != null ? esResponse.hits().total().value() : 0L;
-            List<SearchResult> results = new ArrayList<>();
+            int totalPages = size > 0 ? (int) Math.ceil((double) totalHits / size) : 0;
 
+            List<SearchResult> results = new ArrayList<>();
             if (esResponse.hits().hits() != null) {
                 for (Hit<Map> hit : esResponse.hits().hits()) {
                     Map source = hit.source();
@@ -68,8 +104,10 @@ public class SearchService {
                 }
             }
 
-            log.info("SEARCH_QUERY_EXECUTED query={} totalHits={} returnedResults={}", trimmedQuery, totalHits, results.size());
-            return new SearchResponse(trimmedQuery, totalHits, results);
+            log.info("SEARCH_QUERY_EXECUTED query={} page={} size={} sort={} totalHits={} totalPages={} returnedResults={}",
+                    trimmedQuery, page, size, normalizedSort, totalHits, totalPages, results.size());
+
+            return new SearchResponse(trimmedQuery, totalHits, page, size, totalPages, normalizedSort, results);
 
         } catch (Exception e) {
             log.error("SEARCH_QUERY_FAILED query={} index={} error={}", trimmedQuery, indexName, e.getMessage(), e);

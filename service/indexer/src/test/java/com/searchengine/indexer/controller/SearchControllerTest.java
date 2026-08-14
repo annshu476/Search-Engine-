@@ -35,7 +35,7 @@ class SearchControllerTest {
     private SearchDocumentIndexInitializer searchDocumentIndexInitializer;
 
     @Test
-    void search_validQuery_returns200AndJsonStructure() throws Exception {
+    void search_validQueryDefaultParams_returns200AndJsonStructure() throws Exception {
         SearchResult result = new SearchResult(
                 "https://spring.io",
                 "https://spring.io",
@@ -46,14 +46,18 @@ class SearchControllerTest {
                 450,
                 200
         );
-        SearchResponse response = new SearchResponse("spring", 1L, List.of(result));
+        SearchResponse response = new SearchResponse("spring", 1L, 0, 10, 1, "relevance", List.of(result));
 
-        given(searchService.search("spring")).willReturn(response);
+        given(searchService.search("spring", 0, 10, "relevance")).willReturn(response);
 
         mockMvc.perform(get("/api/search").param("q", "spring"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.query").value("spring"))
                 .andExpect(jsonPath("$.totalHits").value(1))
+                .andExpect(jsonPath("$.page").value(0))
+                .andExpect(jsonPath("$.size").value(10))
+                .andExpect(jsonPath("$.totalPages").value(1))
+                .andExpect(jsonPath("$.sort").value("relevance"))
                 .andExpect(jsonPath("$.results[0].url").value("https://spring.io"))
                 .andExpect(jsonPath("$.results[0].canonicalUrl").value("https://spring.io"))
                 .andExpect(jsonPath("$.results[0].urlHash").value("abc123hash"))
@@ -65,20 +69,80 @@ class SearchControllerTest {
     }
 
     @Test
-    void search_zeroResults_returns200AndEmptyResults() throws Exception {
-        SearchResponse response = new SearchResponse("nonexistent", 0L, List.of());
-        given(searchService.search("nonexistent")).willReturn(response);
+    void search_explicitPageAndSize_returns200() throws Exception {
+        SearchResponse response = new SearchResponse("spring", 25L, 1, 20, 2, "relevance", List.of());
+        given(searchService.search("spring", 1, 20, "relevance")).willReturn(response);
+
+        mockMvc.perform(get("/api/search")
+                        .param("q", "spring")
+                        .param("page", "1")
+                        .param("size", "20")
+                        .param("sort", "relevance"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.query").value("spring"))
+                .andExpect(jsonPath("$.totalHits").value(25))
+                .andExpect(jsonPath("$.page").value(1))
+                .andExpect(jsonPath("$.size").value(20))
+                .andExpect(jsonPath("$.totalPages").value(2))
+                .andExpect(jsonPath("$.sort").value("relevance"));
+    }
+
+    @Test
+    void search_zeroResults_returns200AndTotalPages0() throws Exception {
+        SearchResponse response = new SearchResponse("nonexistent", 0L, 0, 10, 0, "relevance", List.of());
+        given(searchService.search("nonexistent", 0, 10, "relevance")).willReturn(response);
 
         mockMvc.perform(get("/api/search").param("q", "nonexistent"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.query").value("nonexistent"))
                 .andExpect(jsonPath("$.totalHits").value(0))
+                .andExpect(jsonPath("$.totalPages").value(0))
                 .andExpect(jsonPath("$.results").isEmpty());
     }
 
     @Test
+    void search_negativePage_returns400() throws Exception {
+        given(searchService.search("spring", -1, 10, "relevance"))
+                .willThrow(new IllegalArgumentException("Page must be greater than or equal to 0"));
+
+        mockMvc.perform(get("/api/search").param("q", "spring").param("page", "-1"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("Page must be greater than or equal to 0"));
+    }
+
+    @Test
+    void search_sizeZero_returns400() throws Exception {
+        given(searchService.search("spring", 0, 0, "relevance"))
+                .willThrow(new IllegalArgumentException("Page size must be between 1 and 50"));
+
+        mockMvc.perform(get("/api/search").param("q", "spring").param("size", "0"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("Page size must be between 1 and 50"));
+    }
+
+    @Test
+    void search_sizeExceedsMaximum_returns400() throws Exception {
+        given(searchService.search("spring", 0, 51, "relevance"))
+                .willThrow(new IllegalArgumentException("Page size must be between 1 and 50"));
+
+        mockMvc.perform(get("/api/search").param("q", "spring").param("size", "51"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("Page size must be between 1 and 50"));
+    }
+
+    @Test
+    void search_invalidSort_returns400() throws Exception {
+        given(searchService.search("spring", 0, 10, "invalid_sort"))
+                .willThrow(new IllegalArgumentException("Unsupported sort option: invalid_sort"));
+
+        mockMvc.perform(get("/api/search").param("q", "spring").param("sort", "invalid_sort"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("Unsupported sort option: invalid_sort"));
+    }
+
+    @Test
     void search_blankQuery_returns400() throws Exception {
-        given(searchService.search("   "))
+        given(searchService.search("   ", 0, 10, "relevance"))
                 .willThrow(new IllegalArgumentException("Search query must not be blank"));
 
         mockMvc.perform(get("/api/search").param("q", "   "))
@@ -89,7 +153,7 @@ class SearchControllerTest {
     @Test
     void search_oversizedQuery_returns400() throws Exception {
         String longQuery = "a".repeat(201);
-        given(searchService.search(longQuery))
+        given(searchService.search(longQuery, 0, 10, "relevance"))
                 .willThrow(new IllegalArgumentException("Search query exceeds maximum allowed length"));
 
         mockMvc.perform(get("/api/search").param("q", longQuery))
@@ -98,8 +162,8 @@ class SearchControllerTest {
     }
 
     @Test
-    void search_elasticsearchFailure_returns530() throws Exception {
-        given(searchService.search("java"))
+    void search_elasticsearchFailure_returns503() throws Exception {
+        given(searchService.search("java", 0, 10, "relevance"))
                 .willThrow(new SearchQueryException("Search query failed", new RuntimeException("ES down")));
 
         mockMvc.perform(get("/api/search").param("q", "java"))

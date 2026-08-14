@@ -24,8 +24,12 @@ public class SearchController {
     private final SearchService searchService;
 
     @GetMapping
-    public ResponseEntity<SearchResponse> search(@RequestParam(name = "q", required = false) String query) {
-        SearchResponse response = searchService.search(query);
+    public ResponseEntity<SearchResponse> search(
+            @RequestParam(name = "q", required = false) String query,
+            @RequestParam(name = "page", defaultValue = "0") int page,
+            @RequestParam(name = "size", defaultValue = "10") int size,
+            @RequestParam(name = "sort", defaultValue = "relevance") String sort) {
+        SearchResponse response = searchService.search(query, page, size, sort);
         return ResponseEntity.ok(response);
     }
 

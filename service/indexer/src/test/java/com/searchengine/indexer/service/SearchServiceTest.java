@@ -12,7 +12,6 @@ import co.elastic.clients.elasticsearch.core.search.TotalHits;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -26,8 +25,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
 class SearchServiceTest {
@@ -46,106 +43,187 @@ class SearchServiceTest {
 
         searchProperties = new SearchProperties();
         searchProperties.setMaxResults(10);
+        searchProperties.setMaxPageSize(50);
         searchProperties.setMaxQueryLength(200);
 
         searchService = new SearchService(elasticsearchClient, indexerProperties, searchProperties);
     }
 
-    @Test
-    void search_validQuery_returnsMatchingResults() throws IOException {
+    private co.elastic.clients.elasticsearch.core.SearchResponse<Map> createMockEsResponse(long hitsCount) {
         co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockEsResponse = mock(co.elastic.clients.elasticsearch.core.SearchResponse.class);
         HitsMetadata<Map> hitsMetadata = mock(HitsMetadata.class);
         TotalHits totalHits = mock(TotalHits.class);
 
-        given(totalHits.value()).willReturn(1L);
+        given(totalHits.value()).willReturn(hitsCount);
         given(hitsMetadata.total()).willReturn(totalHits);
 
-        Hit<Map> hit = mock(Hit.class);
-        Map<String, Object> source = Map.of(
-                "url", "https://spring.io",
-                "canonicalUrl", "https://spring.io",
-                "urlHash", "abc123",
-                "title", "Spring Framework",
-                "metaDescription", "Spring makes Java easier",
-                "bodyText", "Body text content that should not be in SearchResult",
-                "language", "en",
-                "wordCount", 450,
-                "statusCode", 200
-        );
-        given(hit.source()).willReturn(source);
-        given(hitsMetadata.hits()).willReturn(List.of(hit));
-        given(mockEsResponse.hits()).willReturn(hitsMetadata);
+        if (hitsCount > 0) {
+            Hit<Map> hit = mock(Hit.class);
+            Map<String, Object> source = Map.of(
+                    "url", "https://spring.io",
+                    "canonicalUrl", "https://spring.io",
+                    "urlHash", "abc123",
+                    "title", "Spring Framework",
+                    "metaDescription", "Spring makes Java easier",
+                    "bodyText", "Body text content that should not be in SearchResult",
+                    "language", "en",
+                    "wordCount", 450,
+                    "statusCode", 200
+            );
+            given(hit.source()).willReturn(source);
+            given(hitsMetadata.hits()).willReturn(List.of(hit));
+        } else {
+            given(hitsMetadata.hits()).willReturn(List.of());
+        }
 
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockEsResponse);
+        given(mockEsResponse.hits()).willReturn(hitsMetadata);
+        return mockEsResponse;
+    }
+
+    @Test
+    void search_defaultPageAndSize_appliesDefaults() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
 
         SearchResponse response = searchService.search("spring");
 
-        assertThat(response).isNotNull();
-        assertThat(response.query()).isEqualTo("spring");
-        assertThat(response.totalHits()).isEqualTo(1L);
-        assertThat(response.results()).hasSize(1);
-
-        SearchResult result = response.results().get(0);
-        assertThat(result.url()).isEqualTo("https://spring.io");
-        assertThat(result.canonicalUrl()).isEqualTo("https://spring.io");
-        assertThat(result.urlHash()).isEqualTo("abc123");
-        assertThat(result.title()).isEqualTo("Spring Framework");
-        assertThat(result.metaDescription()).isEqualTo("Spring makes Java easier");
-        assertThat(result.language()).isEqualTo("en");
-        assertThat(result.wordCount()).isEqualTo(450);
-        assertThat(result.statusCode()).isEqualTo(200);
+        assertThat(response.page()).isEqualTo(0);
+        assertThat(response.size()).isEqualTo(10);
+        assertThat(response.sort()).isEqualTo("relevance");
+        assertThat(response.totalPages()).isEqualTo(1);
     }
 
     @Test
-    void search_zeroResults_returnsEmptyList() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockEsResponse = mock(co.elastic.clients.elasticsearch.core.SearchResponse.class);
-        HitsMetadata<Map> hitsMetadata = mock(HitsMetadata.class);
-        TotalHits totalHits = mock(TotalHits.class);
+    void search_explicitPageAndSize_calculatesFromAndSizeCorrectly() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(25L);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
 
-        given(totalHits.value()).willReturn(0L);
-        given(hitsMetadata.total()).willReturn(totalHits);
-        given(hitsMetadata.hits()).willReturn(List.of());
-        given(mockEsResponse.hits()).willReturn(hitsMetadata);
+        SearchResponse response = searchService.search("spring", 2, 10, "relevance");
 
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockEsResponse);
-
-        SearchResponse response = searchService.search("nonexistent");
-
-        assertThat(response).isNotNull();
-        assertThat(response.query()).isEqualTo("nonexistent");
-        assertThat(response.totalHits()).isEqualTo(0L);
-        assertThat(response.results()).isEmpty();
+        assertThat(response.page()).isEqualTo(2);
+        assertThat(response.size()).isEqualTo(10);
+        assertThat(response.totalHits()).isEqualTo(25L);
+        assertThat(response.totalPages()).isEqualTo(3);
     }
 
     @Test
-    void search_nullQuery_throwsIllegalArgumentException() {
-        assertThatThrownBy(() -> searchService.search(null))
+    void search_totalPagesCalculation() throws IOException {
+        // 0 hits -> 0 pages
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> res0 = createMockEsResponse(0L);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(res0);
+        assertThat(searchService.search("test", 0, 10, "relevance").totalPages()).isEqualTo(0);
+
+        // 1 hit / size 10 -> 1 page
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> res1 = createMockEsResponse(1L);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(res1);
+        assertThat(searchService.search("test", 0, 10, "relevance").totalPages()).isEqualTo(1);
+
+        // 10 hits / size 10 -> 1 page
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> res10 = createMockEsResponse(10L);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(res10);
+        assertThat(searchService.search("test", 0, 10, "relevance").totalPages()).isEqualTo(1);
+
+        // 11 hits / size 10 -> 2 pages
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> res11 = createMockEsResponse(11L);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(res11);
+        assertThat(searchService.search("test", 0, 10, "relevance").totalPages()).isEqualTo(2);
+
+        // 100 hits / size 25 -> 4 pages
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> res100 = createMockEsResponse(100L);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(res100);
+        assertThat(searchService.search("test", 0, 25, "relevance").totalPages()).isEqualTo(4);
+    }
+
+    @Test
+    void search_page0Accepted() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+
+        assertThat(searchService.search("test", 0, 10, "relevance").page()).isEqualTo(0);
+    }
+
+    @Test
+    void search_negativePage_rejected() {
+        assertThatThrownBy(() -> searchService.search("test", -1, 10, "relevance"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Search query must not be blank");
+                .hasMessageContaining("Page must be greater than or equal to 0");
     }
 
     @Test
-    void search_blankQuery_throwsIllegalArgumentException() {
-        assertThatThrownBy(() -> searchService.search("   "))
+    void search_size1Accepted() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+
+        assertThat(searchService.search("test", 0, 1, "relevance").size()).isEqualTo(1);
+    }
+
+    @Test
+    void search_size50Accepted() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+
+        assertThat(searchService.search("test", 0, 50, "relevance").size()).isEqualTo(50);
+    }
+
+    @Test
+    void search_sizeGreaterThanMaxPageSize_rejected() {
+        assertThatThrownBy(() -> searchService.search("test", 0, 51, "relevance"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Search query must not be blank");
+                .hasMessageContaining("Page size must be between 1 and 50");
     }
 
     @Test
-    void search_queryExceedingMaxLength_throwsIllegalArgumentException() {
-        String longQuery = "a".repeat(201);
-        assertThatThrownBy(() -> searchService.search(longQuery))
+    void search_size0_rejected() {
+        assertThatThrownBy(() -> searchService.search("test", 0, 0, "relevance"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Search query exceeds maximum allowed length");
+                .hasMessageContaining("Page size must be between 1 and 50");
     }
 
     @Test
-    void search_elasticsearchException_throwsSearchQueryException() throws IOException {
+    void search_relevanceSort_accepted() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+
+        SearchResponse response = searchService.search("test", 0, 10, "relevance");
+        assertThat(response.sort()).isEqualTo("relevance");
+    }
+
+    @Test
+    void search_newestSort_accepted() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+
+        SearchResponse response = searchService.search("test", 0, 10, "newest");
+        assertThat(response.sort()).isEqualTo("newest");
+    }
+
+    @Test
+    void search_unsupportedSort_rejected() {
+        assertThatThrownBy(() -> searchService.search("test", 0, 10, "unsupported_sort"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Unsupported sort option: unsupported_sort");
+    }
+
+    @Test
+    void search_elasticsearchFailure_throwsSearchQueryException() throws IOException {
         given(elasticsearchClient.search(any(Function.class), any(Class.class)))
                 .willThrow(new RuntimeException("Connection refused"));
 
-        assertThatThrownBy(() -> searchService.search("java"))
+        assertThatThrownBy(() -> searchService.search("java", 0, 10, "relevance"))
                 .isInstanceOf(SearchQueryException.class)
                 .hasMessageContaining("Elasticsearch search query failed for: java");
+    }
+
+    @Test
+    void search_bodyTextNotReturnedInSearchResult() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+
+        SearchResponse response = searchService.search("spring", 0, 10, "relevance");
+        SearchResult result = response.results().get(0);
+
+        assertThat(result.url()).isEqualTo("https://spring.io");
+        assertThat(result.title()).isEqualTo("Spring Framework");
+        assertThat(SearchResult.class.getDeclaredFields()).noneMatch(field -> field.getName().equals("bodyText"));
     }
 }

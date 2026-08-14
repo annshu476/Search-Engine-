@@ -12,5 +12,6 @@ import org.springframework.stereotype.Component;
 public class SearchProperties {
 
     private int maxResults = 10;
+    private int maxPageSize = 50;
     private int maxQueryLength = 200;
 }

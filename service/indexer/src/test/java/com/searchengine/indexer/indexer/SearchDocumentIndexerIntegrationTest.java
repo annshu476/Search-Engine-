@@ -1,7 +1,9 @@
 package com.searchengine.indexer.indexer;
 
 import com.searchengine.indexer.initializer.SearchDocumentIndexInitializer;
+import com.searchengine.indexer.model.dto.SearchResponse;
 import com.searchengine.indexer.model.kafka.SearchDocument;
+import com.searchengine.indexer.service.SearchService;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch.core.GetResponse;
 import org.junit.jupiter.api.Tag;
@@ -28,8 +30,11 @@ class SearchDocumentIndexerIntegrationTest {
     @Autowired
     private SearchDocumentIndexInitializer indexInitializer;
 
+    @Autowired
+    private SearchService searchService;
+
     @Test
-    void endToEndElasticsearchIndexingAndIdempotency() throws Exception {
+    void endToEndElasticsearchIndexingIdempotencyAndPagination() throws Exception {
         // 1. Verify index created by initializer
         indexInitializer.initializeIndex();
         boolean indexExists = elasticsearchClient.indices().exists(e -> e.index("search-documents")).value();
@@ -105,5 +110,39 @@ class SearchDocumentIndexerIntegrationTest {
         assertThat(sourceB.get("metaDescription")).isEqualTo("New Meta Description");
         assertThat(sourceB.get("bodyText")).isEqualTo("New updated body text content");
         assertThat(sourceB.get("wordCount")).isEqualTo(250);
+
+        // 6. Test Pagination and Sorting via SearchService
+        Instant time1 = Instant.now().minusSeconds(60);
+        Instant time2 = Instant.now();
+
+        SearchDocument doc1 = new SearchDocument(
+                "https://searchengine.org/page1", "https://searchengine.org/page1", "hash-page-1",
+                "Pagination Test Page One", "Meta description for page 1", List.of("H1"),
+                "Unique content for pagination testing", "en", 150, 200, "text/html", time1, time1
+        );
+
+        SearchDocument doc2 = new SearchDocument(
+                "https://searchengine.org/page2", "https://searchengine.org/page2", "hash-page-2",
+                "Pagination Test Page Two", "Meta description for page 2", List.of("H2"),
+                "Unique content for pagination testing", "en", 200, 200, "text/html", time2, time2
+        );
+
+        searchDocumentIndexer.index(doc1);
+        searchDocumentIndexer.index(doc2);
+
+        elasticsearchClient.indices().refresh(r -> r.index("search-documents"));
+
+        SearchResponse page0 = searchService.search("pagination", 0, 1, "newest");
+        assertThat(page0.totalHits()).isGreaterThanOrEqualTo(2L);
+        assertThat(page0.page()).isEqualTo(0);
+        assertThat(page0.size()).isEqualTo(1);
+        assertThat(page0.sort()).isEqualTo("newest");
+        assertThat(page0.results()).hasSize(1);
+
+        SearchResponse page1 = searchService.search("pagination", 1, 1, "newest");
+        assertThat(page1.page()).isEqualTo(1);
+        assertThat(page1.size()).isEqualTo(1);
+        assertThat(page1.results()).hasSize(1);
+        assertThat(page1.results().get(0).urlHash()).isNotEqualTo(page0.results().get(0).urlHash());
     }
 }
