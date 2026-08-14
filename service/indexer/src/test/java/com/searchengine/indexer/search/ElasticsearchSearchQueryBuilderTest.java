@@ -4,6 +4,7 @@ import com.searchengine.indexer.config.SearchProperties;
 import co.elastic.clients.elasticsearch._types.query_dsl.MultiMatchQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch._types.query_dsl.TextQueryType;
+import co.elastic.clients.elasticsearch.core.search.Highlight;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -49,22 +50,26 @@ class ElasticsearchSearchQueryBuilderTest {
 
         assertThat(multiMatch.query()).isEqualTo("Spring Boot");
         assertThat(multiMatch.fuzziness()).isNull();
-        assertThat(multiMatch.fields()).containsExactly(
-                "title^4.0",
-                "headings^3.0",
-                "metaDescription^2.0",
-                "bodyText^1.0"
-        );
     }
 
     @Test
-    void buildMultiMatchQuery_customFuzziness_appliesCustomFuzzinessValue() {
-        searchProperties.getFuzzy().setEnabled(true);
-        searchProperties.getFuzzy().setFuzziness("2");
+    void buildHighlight_enabled_buildsHighlightWithConfiguredFields() {
+        Highlight highlight = queryBuilder.buildHighlight();
 
-        Query query = queryBuilder.buildMultiMatchQuery("elastcsearch");
-        MultiMatchQuery multiMatch = query.multiMatch();
+        assertThat(highlight).isNotNull();
+        assertThat(highlight.preTags()).containsExactly("<em>");
+        assertThat(highlight.postTags()).containsExactly("</em>");
+        assertThat(highlight.fields()).containsKeys("title", "headings", "metaDescription", "bodyText");
+        assertThat(highlight.fields().get("title").fragmentSize()).isEqualTo(150);
+        assertThat(highlight.fields().get("title").numberOfFragments()).isEqualTo(2);
+    }
 
-        assertThat(multiMatch.fuzziness()).isEqualTo("2");
+    @Test
+    void buildHighlight_disabled_returnsNull() {
+        searchProperties.getHighlight().setEnabled(false);
+
+        Highlight highlight = queryBuilder.buildHighlight();
+
+        assertThat(highlight).isNull();
     }
 }

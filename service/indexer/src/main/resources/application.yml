@@ -41,6 +41,12 @@ indexer:
     fuzzy:
       enabled: ${SEARCH_FUZZY_ENABLED:true}
       fuzziness: ${SEARCH_FUZZINESS:AUTO}
+    highlight:
+      enabled: ${SEARCH_HIGHLIGHT_ENABLED:true}
+      fragment-size: ${SEARCH_HIGHLIGHT_FRAGMENT_SIZE:150}
+      number-of-fragments: ${SEARCH_HIGHLIGHT_NUMBER_OF_FRAGMENTS:2}
+      pre-tag: ${SEARCH_HIGHLIGHT_PRE_TAG:<em>}
+      post-tag: ${SEARCH_HIGHLIGHT_POST_TAG:</em>}
 
 elasticsearch:
   url: ${ELASTICSEARCH_URL:http://localhost:9200}

@@ -18,6 +18,7 @@ public class SearchProperties {
 
     private Relevance relevance = new Relevance();
     private Fuzzy fuzzy = new Fuzzy();
+    private Highlight highlight = new Highlight();
 
     @Getter
     @Setter
@@ -33,6 +34,16 @@ public class SearchProperties {
     public static class Fuzzy {
         private boolean enabled = true;
         private String fuzziness = "AUTO";
+    }
+
+    @Getter
+    @Setter
+    public static class Highlight {
+        private boolean enabled = true;
+        private int fragmentSize = 150;
+        private int numberOfFragments = 2;
+        private String preTag = "<em>";
+        private String postTag = "</em>";
     }
 
     @PostConstruct
@@ -51,6 +62,20 @@ public class SearchProperties {
         }
         if (fuzzy.isEnabled() && (fuzzy.getFuzziness() == null || fuzzy.getFuzziness().isBlank())) {
             throw new IllegalStateException("Fuzziness configuration must not be null or blank when fuzzy search is enabled");
+        }
+        if (highlight.isEnabled()) {
+            if (highlight.getFragmentSize() <= 0) {
+                throw new IllegalStateException("Highlight fragment size must be greater than 0");
+            }
+            if (highlight.getNumberOfFragments() < 0) {
+                throw new IllegalStateException("Highlight number of fragments must be greater than or equal to 0");
+            }
+            if (highlight.getPreTag() == null || highlight.getPreTag().isBlank()) {
+                throw new IllegalStateException("Highlight preTag must not be null or blank when highlighting is enabled");
+            }
+            if (highlight.getPostTag() == null || highlight.getPostTag().isBlank()) {
+                throw new IllegalStateException("Highlight postTag must not be null or blank when highlighting is enabled");
+            }
         }
     }
 }

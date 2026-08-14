@@ -9,12 +9,14 @@ import com.searchengine.indexer.search.ElasticsearchSearchQueryBuilder;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
+import co.elastic.clients.elasticsearch.core.search.Highlight;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -63,6 +65,7 @@ public class SearchService {
 
         String indexName = indexerElasticsearchProperties.getIndexName();
         Query esQuery = searchQueryBuilder.buildMultiMatchQuery(trimmedQuery);
+        Highlight highlightConfig = searchQueryBuilder.buildHighlight();
 
         try {
             co.elastic.clients.elasticsearch.core.SearchResponse<Map> esResponse = elasticsearchClient.search(s -> {
@@ -70,6 +73,10 @@ public class SearchService {
                         .from(from)
                         .size(size)
                         .query(esQuery);
+
+                if (highlightConfig != null) {
+                    s.highlight(highlightConfig);
+                }
 
                 if ("newest".equals(normalizedSort)) {
                     s.sort(so -> so.field(f -> f.field("indexedAt").order(SortOrder.Desc)))
@@ -98,13 +105,23 @@ public class SearchService {
                         Integer wordCount = source.get("wordCount") != null ? ((Number) source.get("wordCount")).intValue() : null;
                         Integer statusCode = source.get("statusCode") != null ? ((Number) source.get("statusCode")).intValue() : null;
 
-                        results.add(new SearchResult(url, canonicalUrl, urlHash, title, metaDescription, language, wordCount, statusCode));
+                        Map<String, List<String>> highlightsMap = new HashMap<>();
+                        Map<String, List<String>> esHighlights = hit.highlight();
+                        if (esHighlights != null && !esHighlights.isEmpty()) {
+                            for (Map.Entry<String, List<String>> entry : esHighlights.entrySet()) {
+                                if (entry.getValue() != null && !entry.getValue().isEmpty()) {
+                                    highlightsMap.put(entry.getKey(), entry.getValue());
+                                }
+                            }
+                        }
+
+                        results.add(new SearchResult(url, canonicalUrl, urlHash, title, metaDescription, language, wordCount, statusCode, highlightsMap));
                     }
                 }
             }
 
-            log.info("SEARCH_QUERY_EXECUTED query={} page={} size={} sort={} fuzzyEnabled={} totalHits={} totalPages={} returnedResults={}",
-                    trimmedQuery, page, size, normalizedSort, searchProperties.getFuzzy().isEnabled(), totalHits, totalPages, results.size());
+            log.info("SEARCH_QUERY_EXECUTED query={} page={} size={} sort={} fuzzyEnabled={} highlightEnabled={} totalHits={} totalPages={} returnedResults={}",
+                    trimmedQuery, page, size, normalizedSort, searchProperties.getFuzzy().isEnabled(), searchProperties.getHighlight().isEnabled(), totalHits, totalPages, results.size());
 
             return new SearchResponse(trimmedQuery, totalHits, page, size, totalPages, normalizedSort, results);
 

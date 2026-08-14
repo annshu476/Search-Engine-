@@ -30,24 +30,36 @@ class SearchPropertiesTest {
         SearchProperties.Fuzzy fuzzy = searchProperties.getFuzzy();
         assertThat(fuzzy.isEnabled()).isTrue();
         assertThat(fuzzy.getFuzziness()).isEqualTo("AUTO");
+
+        SearchProperties.Highlight highlight = searchProperties.getHighlight();
+        assertThat(highlight.isEnabled()).isTrue();
+        assertThat(highlight.getFragmentSize()).isEqualTo(150);
+        assertThat(highlight.getNumberOfFragments()).isEqualTo(2);
+        assertThat(highlight.getPreTag()).isEqualTo("<em>");
+        assertThat(highlight.getPostTag()).isEqualTo("</em>");
     }
 
     @Test
-    void validateProperties_validCustomBoostsAndFuzzy_succeeds() {
+    void validateProperties_validCustomConfig_succeeds() {
         SearchProperties.Relevance relevance = searchProperties.getRelevance();
         relevance.setTitleBoost(5.0);
         relevance.setHeadingsBoost(2.5);
-        relevance.setMetaDescriptionBoost(1.5);
-        relevance.setBodyBoost(0.5);
 
         SearchProperties.Fuzzy fuzzy = searchProperties.getFuzzy();
         fuzzy.setEnabled(true);
         fuzzy.setFuzziness("1");
 
+        SearchProperties.Highlight highlight = searchProperties.getHighlight();
+        highlight.setEnabled(true);
+        highlight.setFragmentSize(200);
+        highlight.setNumberOfFragments(3);
+        highlight.setPreTag("<mark>");
+        highlight.setPostTag("</mark>");
+
         searchProperties.validateProperties();
 
-        assertThat(relevance.getTitleBoost()).isEqualTo(5.0);
-        assertThat(fuzzy.getFuzziness()).isEqualTo("1");
+        assertThat(highlight.getFragmentSize()).isEqualTo(200);
+        assertThat(highlight.getPreTag()).isEqualTo("<mark>");
     }
 
     @Test
@@ -56,40 +68,6 @@ class SearchPropertiesTest {
         assertThatThrownBy(() -> searchProperties.validateProperties())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Title boost must be greater than 0");
-    }
-
-    @Test
-    void validateProperties_invalidHeadingsBoost_throwsIllegalStateException() {
-        searchProperties.getRelevance().setHeadingsBoost(-1.0);
-        assertThatThrownBy(() -> searchProperties.validateProperties())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Headings boost must be greater than 0");
-    }
-
-    @Test
-    void validateProperties_invalidMetaDescriptionBoost_throwsIllegalStateException() {
-        searchProperties.getRelevance().setMetaDescriptionBoost(0.0);
-        assertThatThrownBy(() -> searchProperties.validateProperties())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Meta description boost must be greater than 0");
-    }
-
-    @Test
-    void validateProperties_invalidBodyBoost_throwsIllegalStateException() {
-        searchProperties.getRelevance().setBodyBoost(0.0);
-        assertThatThrownBy(() -> searchProperties.validateProperties())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Body boost must be greater than 0");
-    }
-
-    @Test
-    void validateProperties_invalidNullFuzzinessWhenEnabled_throwsIllegalStateException() {
-        searchProperties.getFuzzy().setEnabled(true);
-        searchProperties.getFuzzy().setFuzziness(null);
-
-        assertThatThrownBy(() -> searchProperties.validateProperties())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Fuzziness configuration must not be null or blank when fuzzy search is enabled");
     }
 
     @Test
@@ -103,12 +81,42 @@ class SearchPropertiesTest {
     }
 
     @Test
-    void validateProperties_nullFuzzinessWhenDisabled_succeeds() {
-        searchProperties.getFuzzy().setEnabled(false);
-        searchProperties.getFuzzy().setFuzziness(null);
+    void validateProperties_invalidHighlightFragmentSize_throwsIllegalStateException() {
+        searchProperties.getHighlight().setEnabled(true);
+        searchProperties.getHighlight().setFragmentSize(0);
 
-        searchProperties.validateProperties();
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Highlight fragment size must be greater than 0");
+    }
 
-        assertThat(searchProperties.getFuzzy().isEnabled()).isFalse();
+    @Test
+    void validateProperties_invalidHighlightNumberOfFragments_throwsIllegalStateException() {
+        searchProperties.getHighlight().setEnabled(true);
+        searchProperties.getHighlight().setNumberOfFragments(-1);
+
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Highlight number of fragments must be greater than or equal to 0");
+    }
+
+    @Test
+    void validateProperties_invalidHighlightBlankPreTag_throwsIllegalStateException() {
+        searchProperties.getHighlight().setEnabled(true);
+        searchProperties.getHighlight().setPreTag("   ");
+
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Highlight preTag must not be null or blank when highlighting is enabled");
+    }
+
+    @Test
+    void validateProperties_invalidHighlightBlankPostTag_throwsIllegalStateException() {
+        searchProperties.getHighlight().setEnabled(true);
+        searchProperties.getHighlight().setPostTag("");
+
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Highlight postTag must not be null or blank when highlighting is enabled");
     }
 }

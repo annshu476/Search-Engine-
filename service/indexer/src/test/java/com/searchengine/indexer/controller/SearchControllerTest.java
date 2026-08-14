@@ -13,6 +13,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.mockito.BDDMockito.given;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -35,7 +36,7 @@ class SearchControllerTest {
     private SearchDocumentIndexInitializer searchDocumentIndexInitializer;
 
     @Test
-    void search_validQueryDefaultParams_returns200AndJsonStructure() throws Exception {
+    void search_validQueryDefaultParams_returns200AndJsonStructureWithHighlights() throws Exception {
         SearchResult result = new SearchResult(
                 "https://spring.io",
                 "https://spring.io",
@@ -44,7 +45,8 @@ class SearchControllerTest {
                 "Spring description",
                 "en",
                 450,
-                200
+                200,
+                Map.of("title", List.of("<em>Spring Framework</em>"))
         );
         SearchResponse response = new SearchResponse("spring", 1L, 0, 10, 1, "relevance", List.of(result));
 
@@ -65,7 +67,8 @@ class SearchControllerTest {
                 .andExpect(jsonPath("$.results[0].metaDescription").value("Spring description"))
                 .andExpect(jsonPath("$.results[0].language").value("en"))
                 .andExpect(jsonPath("$.results[0].wordCount").value(450))
-                .andExpect(jsonPath("$.results[0].statusCode").value(200));
+                .andExpect(jsonPath("$.results[0].statusCode").value(200))
+                .andExpect(jsonPath("$.results[0].highlights.title[0]").value("<em>Spring Framework</em>"));
     }
 
     @Test

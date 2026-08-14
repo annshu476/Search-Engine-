@@ -1,5 +1,8 @@
 package com.searchengine.indexer.model.dto;
 
+import java.util.List;
+import java.util.Map;
+
 public record SearchResult(
     String url,
     String canonicalUrl,
@@ -8,5 +11,6 @@ public record SearchResult(
     String metaDescription,
     String language,
     Integer wordCount,
-    Integer statusCode
+    Integer statusCode,
+    Map<String, List<String>> highlights
 ) {}
