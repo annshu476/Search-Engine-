@@ -28,6 +28,7 @@ public class SearchProperties {
     private Analytics analytics = new Analytics();
     private Synonyms synonyms = new Synonyms();
     private SpellCorrection spellCorrection = new SpellCorrection();
+    private Evaluation evaluation = new Evaluation();
     private Relevance relevance = new Relevance();
     private Fuzzy fuzzy = new Fuzzy();
     private Highlight highlight = new Highlight();
@@ -68,6 +69,17 @@ public class SearchProperties {
         private boolean enabled = true;
         private int maximumSuggestions = 3;
         private int minimumTermLength = 3;
+    }
+
+    @Getter
+    @Setter
+    public static class Evaluation {
+        private boolean enabled = true;
+        private double minimumMrr = 0.80;
+        private double minimumHitAt1 = 0.70;
+        private double minimumHitAt3 = 0.90;
+        private double minimumRecallAt10 = 0.95;
+        private double maximumZeroResultRate = 0.10;
     }
 
     @Getter
@@ -168,6 +180,23 @@ public class SearchProperties {
             }
             if (spellCorrection.getMinimumTermLength() < 1) {
                 throw new IllegalStateException("Minimum term length for spell correction must be greater than or equal to 1");
+            }
+        }
+        if (evaluation.isEnabled()) {
+            if (evaluation.getMinimumMrr() < 0.0 || evaluation.getMinimumMrr() > 1.0) {
+                throw new IllegalStateException("Evaluation minimum-mrr must be between 0.0 and 1.0");
+            }
+            if (evaluation.getMinimumHitAt1() < 0.0 || evaluation.getMinimumHitAt1() > 1.0) {
+                throw new IllegalStateException("Evaluation minimum-hit-at-1 must be between 0.0 and 1.0");
+            }
+            if (evaluation.getMinimumHitAt3() < 0.0 || evaluation.getMinimumHitAt3() > 1.0) {
+                throw new IllegalStateException("Evaluation minimum-hit-at-3 must be between 0.0 and 1.0");
+            }
+            if (evaluation.getMinimumRecallAt10() < 0.0 || evaluation.getMinimumRecallAt10() > 1.0) {
+                throw new IllegalStateException("Evaluation minimum-recall-at-10 must be between 0.0 and 1.0");
+            }
+            if (evaluation.getMaximumZeroResultRate() < 0.0 || evaluation.getMaximumZeroResultRate() > 1.0) {
+                throw new IllegalStateException("Evaluation maximum-zero-result-rate must be between 0.0 and 1.0");
             }
         }
         if (relevance.getTitleBoost() <= 0) {
