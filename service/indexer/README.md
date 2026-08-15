@@ -1,6 +1,6 @@
 # Indexer Service
 
-The **Indexer Service** is Service 3 in the Search Engine pipeline. Its primary role is to consume processed document content from Kafka (`search-document-topic`), index the documents into Elasticsearch using explicit mappings, and expose REST Search APIs for querying indexed content with field-weighted relevance scoring, phrase matching, advanced query syntax & operators, production-hardened resilience, response optimization, in-memory caching, search analytics & query tracking, spell correction & synonym-aware search, fuzzy typo tolerance, search result highlighting, search suggestions / autocomplete, advanced search filters, pagination, and sorting support.
+The **Indexer Service** is Service 3 in the Search Engine pipeline. Its primary role is to consume processed document content from Kafka (`search-document-topic`), index the documents into Elasticsearch using explicit mappings, and expose REST Search APIs for querying indexed content with field-weighted relevance scoring, phrase matching, advanced query syntax & operators, production-hardened resilience, response optimization, in-memory caching, search analytics & query tracking, spell correction & synonym-aware search, search quality relevance testing, search analytics & query insights, fuzzy typo tolerance, search result highlighting, search suggestions / autocomplete, advanced search filters, pagination, and sorting support.
 
 ---
 
@@ -28,7 +28,9 @@ SearchDocumentIndexer (Invalidates Search Cache on Indexing Success)
 Elasticsearch (search-documents)
     ├── SearchService (Source Filtering + Caffeine Cache + SearchAnalyticsService + Spell Correction) → GET /api/search?q={query}&language={lang}&contentType={type}&statusCode={status}&fromDate={from}&toDate={to}&page={page}&size={size}&sort={sort}
     ├── SearchSuggestionService                                                                        → GET /api/search/suggest?q={prefix}
-    └── SearchAnalyticsController                                                                      → GET /api/search/analytics
+    ├── SearchEvaluationController                                                                     → POST /api/search/evaluation/run
+    └── SearchAnalyticsController                                                                      → GET /api/search/analytics/summary
+                                                                                                         GET /api/search/analytics/top-queries
                                                                                                          GET /api/search/analytics/zero-results
                                                                                                          POST /api/search/analytics/reset
 ```
@@ -100,241 +102,140 @@ Elasticsearch (search-documents)
 - Presentation metadata only: Highlighting does NOT alter Elasticsearch BM25 relevance scoring or result ordering.
 
 ### Feature 9 — Search Suggestions / Autocomplete
-- Exposes a dedicated `GET /api/search/suggest?q={prefix}` REST endpoint for prefix suggestions.
-- Queries `search-documents` index using Elasticsearch `phrase_prefix` multi-match across `title^4.0`, `headings^3.0`, and `metaDescription^2.0` (excluding raw `bodyText`).
-- Enforces a minimum prefix length of 2 characters (`min-prefix-length: 2`).
+- Exposes `GET /api/search/suggest?q={prefix}` endpoint.
 - Returns clean `SearchSuggestionResponse` DTO containing `query` and `suggestions` list (`List<String>`).
-- Normalizes and deduplicates candidates deterministically while respecting `max-results: 8`.
-- Suggestions endpoints are intentionally NOT cached and NOT recorded in search analytics.
+- Prefix queries search `title.suggest` and `headings.suggest` using Elasticsearch prefix queries.
+- Bounded safety: Prefix length must be $\ge 2$ characters; results bounded to maximum 8 suggestions.
 
-### Feature 10 — Advanced Search Filters
-- Extends `GET /api/search` with optional query filters:
-  - **`language`**: Exact keyword filter on `language` field (max 20 chars, non-blank).
-  - **`contentType`**: Exact keyword filter on `contentType` field (max 100 chars, non-blank).
-  - **`statusCode`**: Exact numeric filter on `statusCode` field (range 100–599).
-  - **`fromDate`**: Range filter `fetchedAt >= fromDate` (ISO-8601 timestamp).
-  - **`toDate`**: Range filter `fetchedAt <= toDate` (ISO-8601 timestamp).
-- Enforces validation: returns HTTP 400 if `fromDate > toDate` with `{"error": "fromDate must not be after toDate"}`.
-- Wraps full-text search and filters in an Elasticsearch `bool` query filter context.
+### Feature 10 — Advanced Search Filtering
+- Adds search filters: `language`, `contentType`, `statusCode`, `fromDate`, `toDate`.
+- Evaluates filters inside `bool.filter` non-scoring context.
+- Fast-fail parameter validations on blank parameters, invalid status codes (100–599), or inverted date ranges (`fromDate > toDate`).
 
-### Feature 11 — Advanced Query Relevance & Phrase Matching
-- Ranks exact phrase matches and exact title phrase matches significantly higher than scattered token matches.
-- Introduces `phraseBoost` (default `2.0`) and `titlePhraseBoost` (default `4.0`) configuration properties under `indexer.search.relevance.*`.
-- Composes multi-word relevance queries with `should` clauses:
-  1. Baseline weighted multi-match query (`best_fields`, `fuzziness = AUTO`).
-  2. Multi-field phrase query (`title^8.0`, `headings^6.0`, `metaDescription^4.0`, `bodyText^2.0`).
-  3. Title exact phrase boost (`match_phrase` on `title`, `boost = 4.0`).
-- Ranking hierarchy: `Exact title phrase > Exact phrase in other fields > Token matches > Fuzzy matches`.
+### Feature 11 — Phrase Matching & Advanced Relevance Weighting
+- Introduces phrase matching boost (`phraseBoost = 2.0`) and title phrase boost (`titlePhraseBoost = 4.0`).
+- Multi-term queries evaluate phrase matches alongside token multi-match queries to boost documents with consecutive term occurrences.
 
 ### Feature 12 — Advanced Search Query Syntax & Operators
-- Adds custom application-level query parser `SearchQueryParser` producing `ParsedSearchQuery`.
-- Supported syntax operators:
-  - **Exact Phrase**: `"spring boot"` (matches as exact phrase).
-  - **Required Term / Phrase**: `+java` or `+"spring boot"` (term/phrase MUST appear in document).
-  - **Excluded Term / Phrase**: `-xml` or `-"spring boot"` (documents containing term/phrase are eliminated via `must_not` non-scoring clause).
-  - **Combined Query**: `"spring boot" +java -xml` (matches exact phrase `"spring boot"` and required term `java`, excluding `xml`).
-- Error Handling: Invalid syntax returns HTTP 400 with `{"error": "Invalid search query syntax"}` via `SearchQuerySyntaxException`.
+- Adds controlled, safe query parsing via `SearchQueryParser`:
+  - **Normal term**: `spring boot`
+  - **Exact phrase**: `"spring boot"`
+  - **Required term**: `+spring`
+  - **Excluded term**: `-xml`
+- Strict safety limits: Maximum 20 query terms, maximum 10 query phrases per request.
 
-### Feature 13 — Search Production Hardening
-- **Search Request Timeout**: Configurable search-level timeout (`timeout: 3s`). Returns `HTTP 503 Service Unavailable` on timeout.
-- **Deep Pagination Protection**: Enforces a configurable maximum offset limit (`max-page-depth: 10000`). Returns `HTTP 400 Request` if `page * size > maxPageDepth` or integer overflow occurs.
-- **Query Complexity Limits**: Enforces query term limits (`max-query-terms: 20`) and phrase limits (`max-query-phrases: 10`).
-- **Observability**: Tracks search metrics (`search.requests`, `search.success`, `search.errors`, `search.validation.errors`, `search.timeouts`, `search.duration`).
+### Feature 13 — Search Production Hardening & Resilience
+- Circuit breaker / query timeout controls (`indexer.search.timeout = 3s`).
+- Deep pagination safety bounds (`indexer.search.max-page-depth = 10000`).
+- Exception handling returning HTTP 400 Bad Request for validation errors and HTTP 500 for backend failures.
 
 ### Feature 14 — Search Performance, Caching & Response Optimization
-- **Elasticsearch Source Filtering**: Configures Elasticsearch search requests to return only fields required by `SearchResult`: `url`, `canonicalUrl`, `urlHash`, `title`, `metaDescription`, `language`, `wordCount`, `statusCode`. Large unused fields (`bodyText`, `headings`, `contentType`, `fetchedAt`, `indexedAt`) are excluded from payload transfer while highlighting for `title`, `headings`, `metaDescription`, and `bodyText` remains fully functional.
-- **Application-Level Search Cache**: Bounded in-memory Caffeine cache (`SearchCacheService`) storing successful `GET /api/search` responses. Configured under `indexer.search.cache` (`enabled: true`, `maximum-size: 1000`, `ttl: 60s`).
-- **Deterministic Cache Key**: Immutable `SearchCacheKey` incorporating trimmed query string, `page`, `size`, `sort`, all search filters (`language`, `contentType`, `statusCode`, `fromDate`, `toDate`), and configuration version namespace to prevent stale responses across config changes.
-- **Cache Invalidation on Indexing**: Automatically clears/invalidates cached search responses when `SearchDocumentIndexer.index(document)` succeeds. Indexing failures leave cache untouched.
+- In-memory Caffeine caching (`SearchCacheService`) for identical search parameter requests.
+- Cache invalidation on new document indexing (`SearchDocumentIndexer`).
+- Source filtering (`_source.includes`) returning only required display fields.
 
 ### Feature 15 — Search Analytics & Query Tracking
-- **Privacy-Safe Search Analytics Layer**: `SearchAnalyticsService` tracks search request volume, successes, failures, validation errors, zero-result searches, resultful searches, execution latency (total/max), cache hits/misses, and query frequency statistics without storing IP addresses, user IDs, cookies, session IDs, or full result URLs.
-- **Bounded In-Memory Query Tracking**: Utilizes Caffeine cache for query frequency tracking (`maximum-query-entries: 5000`, `query-retention: 1h`). Query evictions do NOT reduce global counters (`totalRequests`, `successfulRequests`, etc.).
-- **Internal REST Analytics Endpoints**:
-  - `GET /api/search/analytics`: Returns aggregate snapshot containing `totalRequests`, `successfulRequests`, `failedRequests`, `validationErrors`, `zeroResultSearches`, `resultfulSearches`, `cacheHits`, `cacheMisses`, `averageLatencyMs`, `maxLatencyMs`, `trackedQueries`, and `topQueries` list (bounded by `top-query-limit: 20`).
-  - `GET /api/search/analytics/zero-results`: Returns most frequent zero-result queries sorted by zero-result count descending.
-  - `POST /api/search/analytics/reset`: Clears in-memory analytics counters and query frequency statistics without calling Elasticsearch or modifying search cache/indexes. Returns HTTP 204 No Content.
-- **Micrometer Observability**: Emits Micrometer metrics (`search.analytics.requests`, `search.analytics.success`, `search.analytics.errors`, `search.analytics.validation_errors`, `search.analytics.zero_results`, `search.analytics.resultful`, `search.analytics.duration`) with safe low-cardinality label `operation="search"`.
+- Thread-safe query statistics tracking (`SearchAnalyticsService`).
+- Aggregates request count, successful/failed count, zero-result queries, and average latency.
 
 ### Feature 16 — Search Spell Correction & Synonym-Aware Search
-- **Query-Time Synonym Expansion**: `SearchQueryEnhancer` expands configured synonym rules (e.g. `"java, jdk"`, `"js, javascript"`, `"spring boot, springboot"`) on normal and required search terms without modifying index mappings, rebuilding Elasticsearch indexes, or rewriting exact phrases/excluded terms. Bounded by `maximum-synonyms-per-term: 5`.
-- **Zero-Result Controlled Fallback Correction**: Primary search executes first with original query and Feature 7 fuzzy matching (`fuzziness: AUTO`). Only if the original search returns `totalHits == 0` does `SearchSpellCorrectionService` perform an Elasticsearch Term Suggester lookup for terms with length `>= minimum-term-length: 3`. If a valid correction is found and produces search results, the response populates `"correctedQuery": "corrected string"` while preserving the original `"query": "original string"`.
-- **Operator & Excluded Term Protection**: Excluded terms (`-term`), excluded phrases (`-"phrase"`), and exact phrases (`"phrase"`) are strictly protected from synonym expansion and spell correction.
-- **Analytics & Cache Compatibility**: Analytics records the ORIGINAL user query string. The Caffeine search cache key includes synonym and spell-correction configuration versions to prevent stale responses across config changes.
-- **Structured Metrics & Logs**: Emits `search.synonym.expansions`, `search.correction.attempts`, `search.correction.applied`, and `search.correction.failed` metrics and structured log events (`SEARCH_SYNONYM_EXPANDED`, `SEARCH_QUERY_CORRECTION_ATTEMPT`, `SEARCH_QUERY_CORRECTED`, `SEARCH_QUERY_CORRECTION_NONE`).
+- Query-time synonym expansion (`SearchQueryEnhancer`) for positive terms.
+- Zero-result fallback spell correction (`SearchSpellCorrectionService`) using Elasticsearch Term Suggester API.
 
-> [!WARNING]
-> **Operational Security Note**: The analytics endpoints (`GET /api/search/analytics`, `GET /api/search/analytics/zero-results`, `POST /api/search/analytics/reset`) expose operational search metrics and reset capabilities. In production deployments, these endpoints MUST be protected behind authentication/authorization or restricted to an internal network boundary.
+### Feature 17 — Search Quality, Ranking Evaluation & Relevance Testing
+- Repeatable relevance quality measurement framework (`SearchEvaluationService`).
+- Calculates Precision@K, Recall@K, Mean Reciprocal Rank (MRR), Hit@K, Zero-Result Rate, and Average Result Count.
+- Exposes `POST /api/search/evaluation/run` internal endpoint.
 
-> [!NOTE]
-> **In-Memory Volatility**: Analytics statistics are held purely in memory and reset upon service restart.
+### Feature 18 — Search Analytics & Query Insights
+- Observability-only search analytics layer (`SearchAnalyticsService`) tracking search metrics, cache hit rates, zero-result rates, synonym expansions, spell corrections, filter usage, and advanced syntax usage.
+- Strict Privacy & Security: Computes SHA-256 hashes (`queryHash`) for query aggregation. Query text storage is configurable (`normalized-query-storage: false` by default). Low-cardinality Micrometer metrics with no PII tags.
+- Bounded Caffeine Storage: Queries bounded by `maximum-query-entries` (5,000) and `retention` (24h TTL).
+- Failure Isolation: Analytics failure is caught and logged as `SEARCH_ANALYTICS_RECORDING_FAILED` without affecting search execution or response.
+- REST Endpoints:
+  - `GET /api/search/analytics/summary`
+  - `GET /api/search/analytics/top-queries`
+  - `GET /api/search/analytics/zero-results`
 
 ---
 
-## Package Responsibilities
+## Configuration Properties (`application.yml`)
 
-```
-service/indexer/src/main/java/com/searchengine/indexer/
-├── IndexerApplication.java                      # Spring Boot main application entry point
-├── analytics/
-│   ├── SearchAnalyticsController.java          # REST controller for /api/search/analytics endpoints
-│   └── SearchAnalyticsService.java             # In-memory bounded search analytics manager
-├── config/
-│   ├── ElasticsearchConfig.java                # Bean definitions for RestClient, ElasticsearchTransport, and ElasticsearchClient
-│   ├── ElasticsearchProperties.java            # Connection configuration properties prefixed with 'elasticsearch'
-│   ├── IndexerElasticsearchProperties.java     # Index configuration properties prefixed with 'indexer.elasticsearch'
-│   └── SearchProperties.java                   # Search API configuration properties (cache, hardening, analytics, synonyms, spell-correction)
-├── consumer/
-│   └── SearchDocumentConsumer.java             # Kafka listener for search-document-topic using manual ACK
-├── controller/
-│   └── SearchController.java                   # REST controller exposing GET /api/search and GET /api/search/suggest
-├── exception/
-│   ├── ElasticsearchConfigurationException.java # Custom exception for invalid configuration/URLs
-│   ├── ElasticsearchIndexingException.java     # Custom exception for Elasticsearch indexing failures
-│   ├── SearchDocumentValidationException.java  # Exception thrown on SearchDocument contract validation failure
-│   ├── SearchQueryException.java               # Custom exception for search query execution failures
-│   ├── SearchQuerySyntaxException.java         # Exception thrown on malformed advanced search query syntax
-│   └── SearchSuggestionException.java         # Custom exception for search suggestion execution failures
-├── health/
-│   └── ElasticsearchHealthIndicator.java        # Custom Spring Boot Actuator HealthIndicator for Elasticsearch ping
-├── indexer/
-│   └── SearchDocumentIndexer.java             # Indexes SearchDocument records into Elasticsearch and invalidates search cache
-├── initializer/
-│   └── SearchDocumentIndexInitializer.java     # Checks and creates search-documents index with explicit mapping on startup
-├── mapper/
-│   └── SearchDocumentMapper.java               # Maps SearchDocument records to Elasticsearch document Map
-├── model/
-│   ├── analytics/
-│   │   ├── QueryStats.java                     # Query statistics DTO record
-│   │   ├── SearchAnalyticsSnapshot.java        # Analytics snapshot DTO record
-│   │   └── ZeroResultsResponse.java            # Zero-results response DTO record
-│   ├── dto/
-│   │   ├── SearchCorrection.java               # Search correction DTO record
-│   │   ├── SearchFilter.java                   # Filter parameters record DTO
-│   │   ├── SearchResponse.java                 # Search API response wrapper (includes optional correctedQuery)
-│   │   ├── SearchResult.java                   # Individual search hit DTO
-│   │   └── SearchSuggestionResponse.java       # Suggestion API response DTO
-│   ├── kafka/
-│   │   └── SearchDocument.java                 # Exact V1 SearchDocument record contract
-│   └── search/
-│       ├── ParsedSearchQuery.java              # Advanced query syntax parser DTO
-│       ├── SearchCacheKey.java                 # Deterministic search cache key record
-│       └── SearchSynonym.java                  # Synonym representation record
-├── search/
-│   ├── ElasticsearchSearchQueryBuilder.java   # Builds bool search queries combining multi-match, phrase boosts, operators, filters, highlighting, synonyms
-│   ├── ElasticsearchSuggestionQueryBuilder.java # Builds phrase_prefix multi-match queries for suggestions
-│   ├── SearchQueryEnhancer.java                # Expands synonyms on positive search terms
-│   └── SearchQueryParser.java                  # Parses raw query string into ParsedSearchQuery model
-├── service/
-│   ├── IndexerService.java                     # Domain service orchestrating document indexing
-│   ├── SearchCacheService.java                 # In-memory Caffeine search cache manager with metrics and logging
-│   ├── SearchService.java                      # Service executing source-filtered, cached, analytics-tracked, spell-corrected search queries
-│   ├── SearchSpellCorrectionService.java       # Elasticsearch Term Suggester zero-result fallback service
-│   └── SearchSuggestionService.java            # Service executing prefix suggestion queries
-└── validator/
-    └── SearchDocumentValidator.java            # Validates SearchDocument required fields and bounds
+```yaml
+indexer:
+  search:
+    max-results: 10
+    max-page-size: 50
+    max-query-length: 200
+    timeout: 3s
+    max-page-depth: 10000
+    max-query-terms: 20
+    max-query-phrases: 10
+    slow-query-threshold-ms: 1000
+    cache:
+      enabled: true
+      maximum-size: 1000
+      ttl: 60s
+    analytics:
+      enabled: true
+      maximum-query-entries: 5000
+      retention: 24h
+      top-query-limit: 20
+      normalized-query-storage: false
+    synonyms:
+      enabled: true
+      maximum-synonyms-per-term: 5
+      rules:
+        - "java, jdk"
+        - "js, javascript"
+        - "spring boot, springboot"
+    spell-correction:
+      enabled: true
+      maximum-suggestions: 3
+      minimum-term-length: 3
+    evaluation:
+      enabled: true
+      minimum-mrr: 0.80
+      minimum-hit-at-1: 0.70
+      minimum-hit-at-3: 0.90
+      minimum-recall-at-10: 0.95
+      maximum-zero-result-rate: 0.10
 ```
 
 ---
 
-## Server Port & Configuration
-
-Default Port: `8083`
-
-### Configuration Properties
-
-| Property Key | Default Value | Environment Variable | Description |
-|---|---|---|---|
-| `server.port` | `8083` | `SERVER_PORT` | Service HTTP port |
-| `spring.kafka.bootstrap-servers` | `localhost:9092` | `KAFKA_BOOTSTRAP_SERVERS` | Kafka cluster bootstrap servers |
-| `spring.kafka.consumer.group-id` | `indexer` | `KAFKA_CONSUMER_GROUP` | Consumer group ID |
-| `indexer.kafka.search-document-topic` | `search-document-topic` | `SEARCH_DOCUMENT_TOPIC` | Topic name for incoming search documents |
-| `indexer.elasticsearch.index-name` | `search-documents` | `ELASTICSEARCH_INDEX_NAME` | Elasticsearch index name |
-| `indexer.search.max-results` | `10` | `SEARCH_MAX_RESULTS` | Default number of search results returned |
-| `indexer.search.max-page-size` | `50` | `SEARCH_MAX_PAGE_SIZE` | Maximum allowed page size |
-| `indexer.search.max-query-length` | `200` | `SEARCH_MAX_QUERY_LENGTH` | Maximum allowed characters in search query |
-| `indexer.search.timeout` | `3s` | `SEARCH_TIMEOUT` | Elasticsearch search request execution timeout |
-| `indexer.search.max-page-depth` | `10000` | `SEARCH_MAX_PAGE_DEPTH` | Maximum allowed Elasticsearch result offset (`page * size`) |
-| `indexer.search.max-query-terms` | `20` | `SEARCH_MAX_QUERY_TERMS` | Maximum allowed meaningful terms per query |
-| `indexer.search.max-query-phrases` | `10` | `SEARCH_MAX_QUERY_PHRASES` | Maximum allowed exact phrases per query |
-| `indexer.search.slow-query-threshold-ms` | `1000` | `SEARCH_SLOW_QUERY_THRESHOLD_MS` | Threshold in ms to log slow query warnings |
-| `indexer.search.cache.enabled` | `true` | `SEARCH_CACHE_ENABLED` | Enables in-memory Caffeine search response caching |
-| `indexer.search.cache.maximum-size` | `1000` | `SEARCH_CACHE_MAXIMUM_SIZE` | Maximum allowed entries in Caffeine cache |
-| `indexer.search.cache.ttl` | `60s` | `SEARCH_CACHE_TTL` | Cache entry time-to-live after write |
-| `indexer.search.analytics.enabled` | `true` | `SEARCH_ANALYTICS_ENABLED` | Enables in-memory search analytics collection |
-| `indexer.search.analytics.maximum-query-entries` | `5000` | `SEARCH_ANALYTICS_MAXIMUM_QUERY_ENTRIES` | Maximum tracked query entries in analytics cache |
-| `indexer.search.analytics.top-query-limit` | `20` | `SEARCH_ANALYTICS_TOP_QUERY_LIMIT` | Maximum top queries returned in analytics snapshot |
-| `indexer.search.analytics.query-retention` | `1h` | `SEARCH_ANALYTICS_QUERY_RETENTION` | Time-to-live retention for tracked query stats |
-| `indexer.search.synonyms.enabled` | `true` | `SEARCH_SYNONYMS_ENABLED` | Enables query-time synonym expansion |
-| `indexer.search.synonyms.maximum-synonyms-per-term` | `5` | `SEARCH_MAX_SYNONYMS_PER_TERM` | Maximum allowed synonym expansions per term |
-| `indexer.search.synonyms.rules` | `["java, jdk", ...]` | N/A | List of comma-separated equivalent synonym rules |
-| `indexer.search.spell-correction.enabled` | `true` | `SEARCH_SPELL_CORRECTION_ENABLED` | Enables zero-result spell correction fallback |
-| `indexer.search.spell-correction.maximum-suggestions` | `3` | `SEARCH_MAX_SPELL_SUGGESTIONS` | Maximum candidate term suggestions per term |
-| `indexer.search.spell-correction.minimum-term-length` | `3` | `SEARCH_SPELL_MIN_TERM_LENGTH` | Minimum term length required for spell correction |
-| `indexer.search.relevance.title-boost` | `4.0` | `SEARCH_TITLE_BOOST` | Field relevance boost for document `title` |
-| `indexer.search.relevance.headings-boost` | `3.0` | `SEARCH_HEADINGS_BOOST` | Field relevance boost for document `headings` |
-| `indexer.search.relevance.meta-description-boost` | `2.0` | `SEARCH_META_DESCRIPTION_BOOST` | Field relevance boost for `metaDescription` |
-| `indexer.search.relevance.body-boost` | `1.0` | `SEARCH_BODY_BOOST` | Field relevance boost for document `bodyText` |
-| `indexer.search.relevance.phrase-boost` | `2.0` | `SEARCH_RELEVANCE_PHRASE_BOOST` | Multi-field phrase relevance boost multiplier |
-| `indexer.search.relevance.title-phrase-boost` | `4.0` | `SEARCH_RELEVANCE_TITLE_PHRASE_BOOST` | Exact title phrase match boost multiplier |
-| `indexer.search.fuzzy.enabled` | `true` | `SEARCH_FUZZY_ENABLED` | Enables fuzzy matching for typo tolerance |
-| `indexer.search.fuzzy.fuzziness` | `AUTO` | `SEARCH_FUZZINESS` | Elasticsearch fuzziness setting |
-| `indexer.search.highlight.enabled` | `true` | `SEARCH_HIGHLIGHT_ENABLED` | Enables search result highlighting |
-| `indexer.search.suggestions.enabled` | `true` | `SEARCH_SUGGESTIONS_ENABLED` | Enables search suggestions / autocomplete |
-| `elasticsearch.url` | `http://localhost:9200` | `ELASTICSEARCH_URL` | Target Elasticsearch endpoint URL |
-
----
-
-## API Specification
+## API Documentation
 
 ### 1. Search Endpoint
 ```http
-GET /api/search?q={query}&language={lang}&contentType={type}&statusCode={status}&fromDate={from}&toDate={to}&page={page}&size={size}&sort={sort}
+GET /api/search?q=spring%20boot&language=en&page=0&size=10&sort=relevance
 ```
 
-#### Normal Search Response (HTTP 200 OK):
-```json
-{
-  "query": "java",
-  "correctedQuery": null,
-  "totalHits": 12,
-  "page": 0,
-  "size": 10,
-  "totalPages": 2,
-  "sort": "relevance",
-  "results": [...]
-}
-```
-
-#### Spell-Corrected Fallback Response (HTTP 200 OK):
-```json
-{
-  "query": "sprng boot",
-  "correctedQuery": "spring boot",
-  "totalHits": 5,
-  "page": 0,
-  "size": 10,
-  "totalPages": 1,
-  "sort": "relevance",
-  "results": [...]
-}
-```
-
-### 2. Search Analytics Endpoint
+### 2. Search Analytics Summary Endpoint
 ```http
-GET /api/search/analytics
+GET /api/search/analytics/summary
 ```
 
-### 3. Zero-Result Queries Endpoint
+### 3. Top Queries Endpoint
+```http
+GET /api/search/analytics/top-queries
+```
+
+### 4. Zero-Result Queries Endpoint
 ```http
 GET /api/search/analytics/zero-results
 ```
 
-### 4. Reset Analytics Endpoint
+### 5. Reset Analytics Endpoint
 ```http
 POST /api/search/analytics/reset
 ```
 *Response*: `HTTP 204 No Content`.
+
+### 6. Relevance Evaluation Endpoint
+```http
+POST /api/search/evaluation/run
+```
 
 ---
 

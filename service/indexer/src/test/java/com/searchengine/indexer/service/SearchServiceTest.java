@@ -4,7 +4,6 @@ import com.searchengine.indexer.analytics.SearchAnalyticsService;
 import com.searchengine.indexer.config.IndexerElasticsearchProperties;
 import com.searchengine.indexer.config.SearchProperties;
 import com.searchengine.indexer.exception.SearchQueryException;
-import com.searchengine.indexer.model.analytics.SearchAnalyticsSnapshot;
 import com.searchengine.indexer.model.dto.SearchResponse;
 import com.searchengine.indexer.search.ElasticsearchSearchQueryBuilder;
 import com.searchengine.indexer.search.SearchQueryEnhancer;
@@ -33,8 +32,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
 class SearchServiceTest {
@@ -74,7 +71,7 @@ class SearchServiceTest {
         searchProperties.getAnalytics().setEnabled(true);
         searchProperties.getAnalytics().setMaximumQueryEntries(100);
         searchProperties.getAnalytics().setTopQueryLimit(5);
-        searchProperties.getAnalytics().setQueryRetention(Duration.ofHours(1));
+        searchProperties.getAnalytics().setRetention(Duration.ofHours(1));
         searchProperties.getSynonyms().setEnabled(true);
         searchProperties.getSpellCorrection().setEnabled(true);
 
@@ -89,7 +86,7 @@ class SearchServiceTest {
         searchAnalyticsService = new SearchAnalyticsService(searchProperties, meterRegistry);
         searchAnalyticsService.init();
 
-        searchService = new SearchService(elasticsearchClient, indexerProperties, searchProperties, searchQueryBuilder, searchQueryParser, searchCacheService, searchAnalyticsService, searchSpellCorrectionService, meterRegistry);
+        searchService = new SearchService(elasticsearchClient, indexerProperties, searchProperties, searchQueryBuilder, searchQueryParser, searchQueryEnhancer, searchCacheService, searchAnalyticsService, searchSpellCorrectionService, meterRegistry);
     }
 
     private co.elastic.clients.elasticsearch.core.SearchResponse<Map> createMockEsResponse(long hitsCount, Map<String, List<String>> highlights) {

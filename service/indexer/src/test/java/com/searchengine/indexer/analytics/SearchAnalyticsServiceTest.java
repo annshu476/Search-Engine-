@@ -1,19 +1,22 @@
 package com.searchengine.indexer.analytics;
 
 import com.searchengine.indexer.config.SearchProperties;
-import com.searchengine.indexer.model.analytics.SearchAnalyticsSnapshot;
-import com.searchengine.indexer.model.analytics.ZeroResultsResponse;
+import com.searchengine.indexer.model.analytics.SearchAnalyticsEvent;
+import com.searchengine.indexer.model.analytics.SearchAnalyticsSummary;
+import com.searchengine.indexer.model.analytics.SearchQueryStats;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 class SearchAnalyticsServiceTest {
 
@@ -25,169 +28,106 @@ class SearchAnalyticsServiceTest {
     void setUp() {
         searchProperties = new SearchProperties();
         searchProperties.getAnalytics().setEnabled(true);
-        searchProperties.getAnalytics().setMaximumQueryEntries(100);
-        searchProperties.getAnalytics().setTopQueryLimit(5);
-        searchProperties.getAnalytics().setQueryRetention(Duration.ofHours(1));
+        searchProperties.getAnalytics().setMaximumQueryEntries(5000);
+        searchProperties.getAnalytics().setTopQueryLimit(20);
+        searchProperties.getAnalytics().setNormalizedQueryStorage(false);
 
         meterRegistry = new SimpleMeterRegistry();
         analyticsService = new SearchAnalyticsService(searchProperties, meterRegistry);
         analyticsService.init();
     }
 
-    @Test
-    void recordRequestAndSuccess_updatesCountersAndSnapshot() {
-        analyticsService.recordRequest();
-        analyticsService.recordSuccess("spring boot", 10L, 50L);
-
-        SearchAnalyticsSnapshot snapshot = analyticsService.getSnapshot();
-        assertThat(snapshot.totalRequests()).isEqualTo(1L);
-        assertThat(snapshot.successfulRequests()).isEqualTo(1L);
-        assertThat(snapshot.resultfulSearches()).isEqualTo(1L);
-        assertThat(snapshot.zeroResultSearches()).isEqualTo(0L);
-        assertThat(snapshot.failedRequests()).isEqualTo(0L);
-        assertThat(snapshot.validationErrors()).isEqualTo(0L);
-        assertThat(snapshot.averageLatencyMs()).isEqualTo(50.0);
-        assertThat(snapshot.maxLatencyMs()).isEqualTo(50L);
-        assertThat(snapshot.topQueries()).hasSize(1);
-        assertThat(snapshot.topQueries().get(0).query()).isEqualTo("spring boot");
-        assertThat(snapshot.topQueries().get(0).count()).isEqualTo(1L);
+    private SearchAnalyticsEvent createEvent(String query, boolean success, boolean zeroResults, int count, long durationMs, boolean cacheHit) {
+        String hash = SearchAnalyticsService.computeQueryHash(query);
+        return new SearchAnalyticsEvent(
+                Instant.now(), hash, query, success, zeroResults, count, count, durationMs,
+                0, 10, "relevance", cacheHit, true, false, false, false, null, false, false
+        );
     }
 
     @Test
-    void recordZeroResultSearch_updatesZeroResultCounters() {
-        analyticsService.recordRequest();
-        analyticsService.recordSuccess("sprng boot", 0L, 20L);
+    void recordSearch_successfulSearch_updatesSummaryAndStats() {
+        analyticsService.recordSearch(createEvent("spring boot", true, false, 5, 50, false));
 
-        SearchAnalyticsSnapshot snapshot = analyticsService.getSnapshot();
-        assertThat(snapshot.totalRequests()).isEqualTo(1L);
-        assertThat(snapshot.successfulRequests()).isEqualTo(1L);
-        assertThat(snapshot.zeroResultSearches()).isEqualTo(1L);
-        assertThat(snapshot.resultfulSearches()).isEqualTo(0L);
+        SearchAnalyticsSummary summary = analyticsService.getSummary();
+        assertThat(summary.totalSearches()).isEqualTo(1);
+        assertThat(summary.successfulSearches()).isEqualTo(1);
+        assertThat(summary.zeroResultSearches()).isEqualTo(0);
+        assertThat(summary.averageDurationMs()).isEqualTo(50.0);
+        assertThat(summary.averageResultCount()).isEqualTo(5.0);
 
-        ZeroResultsResponse zeroResults = analyticsService.getZeroResults();
-        assertThat(zeroResults.queries()).hasSize(1);
-        assertThat(zeroResults.queries().get(0).query()).isEqualTo("sprng boot");
-        assertThat(zeroResults.queries().get(0).count()).isEqualTo(1L);
+        List<SearchQueryStats> topQueries = analyticsService.getTopQueries();
+        assertThat(topQueries).hasSize(1);
+        assertThat(topQueries.get(0).searchCount()).isEqualTo(1);
+        assertThat(topQueries.get(0).query()).isNull(); // query storage disabled
     }
 
     @Test
-    void recordFailure_updatesFailureCounters() {
-        analyticsService.recordRequest();
+    void recordSearch_queryPrivacyEnabled_storesQueryText() {
+        searchProperties.getAnalytics().setNormalizedQueryStorage(true);
+
+        analyticsService.recordSearch(createEvent("spring boot", true, false, 5, 50, false));
+
+        List<SearchQueryStats> topQueries = analyticsService.getTopQueries();
+        assertThat(topQueries).hasSize(1);
+        assertThat(topQueries.get(0).query()).isEqualTo("spring boot");
+    }
+
+    @Test
+    void recordSearch_zeroResultSearch_incrementsZeroResultStats() {
+        analyticsService.recordSearch(createEvent("nonexistentterm", true, true, 0, 30, false));
+
+        SearchAnalyticsSummary summary = analyticsService.getSummary();
+        assertThat(summary.zeroResultSearches()).isEqualTo(1);
+        assertThat(summary.zeroResultRate()).isEqualTo(1.0);
+
+        List<SearchQueryStats> zeroResultQueries = analyticsService.getZeroResultQueries();
+        assertThat(zeroResultQueries).hasSize(1);
+        assertThat(zeroResultQueries.get(0).zeroResultCount()).isEqualTo(1);
+    }
+
+    @Test
+    void recordSearch_cacheHit_updatesCacheHitRate() {
+        analyticsService.recordSearch(createEvent("spring", true, false, 10, 100, false));
+        analyticsService.recordSearch(createEvent("spring", true, false, 10, 5, true));
+
+        SearchAnalyticsSummary summary = analyticsService.getSummary();
+        assertThat(summary.totalSearches()).isEqualTo(2);
+        assertThat(summary.cacheHitRate()).isEqualTo(0.5);
+    }
+
+    @Test
+    void recordFailure_incrementsFailedSearches() {
         analyticsService.recordFailure();
 
-        SearchAnalyticsSnapshot snapshot = analyticsService.getSnapshot();
-        assertThat(snapshot.totalRequests()).isEqualTo(1L);
-        assertThat(snapshot.failedRequests()).isEqualTo(1L);
-        assertThat(snapshot.successfulRequests()).isEqualTo(0L);
+        SearchAnalyticsSummary summary = analyticsService.getSummary();
+        assertThat(summary.totalSearches()).isEqualTo(1);
+        assertThat(summary.failedSearches()).isEqualTo(1);
     }
 
     @Test
-    void recordValidationError_updatesValidationErrorCounters() {
-        analyticsService.recordRequest();
-        analyticsService.recordValidationError();
-
-        SearchAnalyticsSnapshot snapshot = analyticsService.getSnapshot();
-        assertThat(snapshot.totalRequests()).isEqualTo(1L);
-        assertThat(snapshot.validationErrors()).isEqualTo(1L);
-    }
-
-    @Test
-    void popularQueries_sortedByCountThenZeroResultsThenQuery() {
-        analyticsService.recordRequest();
-        analyticsService.recordSuccess("java", 5L, 10L);
-
-        analyticsService.recordRequest();
-        analyticsService.recordSuccess("spring boot", 10L, 15L);
-        analyticsService.recordRequest();
-        analyticsService.recordSuccess("spring boot", 8L, 12L);
-
-        SearchAnalyticsSnapshot snapshot = analyticsService.getSnapshot();
-        assertThat(snapshot.topQueries()).hasSize(2);
-        assertThat(snapshot.topQueries().get(0).query()).isEqualTo("spring boot");
-        assertThat(snapshot.topQueries().get(0).count()).isEqualTo(2L);
-        assertThat(snapshot.topQueries().get(1).query()).isEqualTo("java");
-        assertThat(snapshot.topQueries().get(1).count()).isEqualTo(1L);
-    }
-
-    @Test
-    void memoryBoundEviction_doesNotReduceGlobalCounters() {
-        searchProperties.getAnalytics().setMaximumQueryEntries(2);
-        SearchAnalyticsService boundedService = new SearchAnalyticsService(searchProperties, meterRegistry);
-        boundedService.init();
-
-        boundedService.recordRequest();
-        boundedService.recordSuccess("q1", 5L, 10L);
-        boundedService.recordRequest();
-        boundedService.recordSuccess("q2", 5L, 10L);
-        boundedService.recordRequest();
-        boundedService.recordSuccess("q3", 5L, 10L);
-
-        SearchAnalyticsSnapshot snapshot = boundedService.getSnapshot();
-        assertThat(snapshot.totalRequests()).isEqualTo(3L);
-        assertThat(snapshot.successfulRequests()).isEqualTo(3L);
-        assertThat(snapshot.trackedQueries()).isLessThanOrEqualTo(2L);
-    }
-
-    @Test
-    void queryRetentionExpiration_removesOldQueryStats() throws InterruptedException {
-        searchProperties.getAnalytics().setQueryRetention(Duration.ofMillis(50));
-        SearchAnalyticsService expiringService = new SearchAnalyticsService(searchProperties, meterRegistry);
-        expiringService.init();
-
-        expiringService.recordRequest();
-        expiringService.recordSuccess("expiring query", 1L, 10L);
-
-        assertThat(expiringService.getSnapshot().topQueries()).hasSize(1);
-
-        Thread.sleep(100);
-
-        assertThat(expiringService.getSnapshot().topQueries()).isEmpty();
-        // Global counters remain intact
-        assertThat(expiringService.getSnapshot().totalRequests()).isEqualTo(1L);
-    }
-
-    @Test
-    void disabledAnalytics_doesNotRecordMetrics() {
+    void recordSearch_disabledAnalytics_doesNotRecord() {
         searchProperties.getAnalytics().setEnabled(false);
-        SearchAnalyticsService disabledService = new SearchAnalyticsService(searchProperties, meterRegistry);
-        disabledService.init();
+        analyticsService.init();
 
-        disabledService.recordRequest();
-        disabledService.recordSuccess("spring", 10L, 20L);
+        analyticsService.recordSearch(createEvent("spring", true, false, 5, 50, false));
 
-        SearchAnalyticsSnapshot snapshot = disabledService.getSnapshot();
-        assertThat(snapshot.totalRequests()).isEqualTo(0L);
-        assertThat(snapshot.successfulRequests()).isEqualTo(0L);
-        assertThat(snapshot.topQueries()).isEmpty();
+        assertThat(analyticsService.getSummary()).isNull();
+        assertThat(analyticsService.getTopQueries()).isEmpty();
     }
 
     @Test
-    void reset_clearsAnalyticsState() {
-        analyticsService.recordRequest();
-        analyticsService.recordSuccess("spring", 5L, 10L);
-        assertThat(analyticsService.getSnapshot().totalRequests()).isEqualTo(1L);
-
-        analyticsService.reset();
-
-        SearchAnalyticsSnapshot snapshot = analyticsService.getSnapshot();
-        assertThat(snapshot.totalRequests()).isEqualTo(0L);
-        assertThat(snapshot.successfulRequests()).isEqualTo(0L);
-        assertThat(snapshot.topQueries()).isEmpty();
-    }
-
-    @Test
-    void concurrentRequests_areThreadSafe() throws InterruptedException {
+    void recordSearch_concurrentRecording_handlesThreadSafety() throws Exception {
         int threads = 10;
-        int requestsPerThread = 100;
+        int perThread = 100;
         ExecutorService executor = Executors.newFixedThreadPool(threads);
         CountDownLatch latch = new CountDownLatch(threads);
 
         for (int i = 0; i < threads; i++) {
             executor.submit(() -> {
                 try {
-                    for (int j = 0; j < requestsPerThread; j++) {
-                        analyticsService.recordRequest();
-                        analyticsService.recordSuccess("concurrent query", 1L, 5L);
+                    for (int j = 0; j < perThread; j++) {
+                        analyticsService.recordSearch(createEvent("concurrent query", true, false, 2, 20, false));
                     }
                 } finally {
                     latch.countDown();
@@ -198,8 +138,13 @@ class SearchAnalyticsServiceTest {
         latch.await();
         executor.shutdown();
 
-        SearchAnalyticsSnapshot snapshot = analyticsService.getSnapshot();
-        assertThat(snapshot.totalRequests()).isEqualTo(threads * requestsPerThread);
-        assertThat(snapshot.successfulRequests()).isEqualTo(threads * requestsPerThread);
+        SearchAnalyticsSummary summary = analyticsService.getSummary();
+        assertThat(summary.totalSearches()).isEqualTo(threads * perThread);
+    }
+
+    @Test
+    void recordSearch_exceptionIsolation_swallowsErrorsGracefully() {
+        assertThatCode(() -> analyticsService.recordSearch(null))
+                .doesNotThrowAnyException();
     }
 }

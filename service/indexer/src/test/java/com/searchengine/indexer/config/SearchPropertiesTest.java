@@ -38,7 +38,8 @@ class SearchPropertiesTest {
         assertThat(analytics.isEnabled()).isTrue();
         assertThat(analytics.getMaximumQueryEntries()).isEqualTo(5000L);
         assertThat(analytics.getTopQueryLimit()).isEqualTo(20);
-        assertThat(analytics.getQueryRetention()).isEqualTo(Duration.ofHours(1));
+        assertThat(analytics.getRetention()).isEqualTo(Duration.ofHours(24));
+        assertThat(analytics.isNormalizedQueryStorage()).isFalse();
 
         SearchProperties.Synonyms synonyms = searchProperties.getSynonyms();
         assertThat(synonyms.isEnabled()).isTrue();
@@ -83,7 +84,7 @@ class SearchPropertiesTest {
         searchProperties.getCache().setTtl(Duration.ofSeconds(120));
         searchProperties.getAnalytics().setMaximumQueryEntries(10000L);
         searchProperties.getAnalytics().setTopQueryLimit(50);
-        searchProperties.getAnalytics().setQueryRetention(Duration.ofHours(2));
+        searchProperties.getAnalytics().setRetention(Duration.ofHours(2));
         searchProperties.getSynonyms().setMaximumSynonymsPerTerm(10);
         searchProperties.getSpellCorrection().setMaximumSuggestions(5);
         searchProperties.getSpellCorrection().setMinimumTermLength(4);

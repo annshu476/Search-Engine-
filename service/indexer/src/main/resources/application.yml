@@ -45,8 +45,9 @@ indexer:
     analytics:
       enabled: ${SEARCH_ANALYTICS_ENABLED:true}
       maximum-query-entries: ${SEARCH_ANALYTICS_MAXIMUM_QUERY_ENTRIES:5000}
+      retention: ${SEARCH_ANALYTICS_RETENTION:24h}
       top-query-limit: ${SEARCH_ANALYTICS_TOP_QUERY_LIMIT:20}
-      query-retention: ${SEARCH_ANALYTICS_QUERY_RETENTION:1h}
+      normalized-query-storage: ${SEARCH_ANALYTICS_STORE_QUERY_TEXT:false}
     synonyms:
       enabled: ${SEARCH_SYNONYMS_ENABLED:true}
       maximum-synonyms-per-term: ${SEARCH_MAX_SYNONYMS_PER_TERM:5}

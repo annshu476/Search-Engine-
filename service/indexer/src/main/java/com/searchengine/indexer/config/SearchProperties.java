@@ -48,7 +48,16 @@ public class SearchProperties {
         private boolean enabled = true;
         private long maximumQueryEntries = 5000;
         private int topQueryLimit = 20;
-        private Duration queryRetention = Duration.ofHours(1);
+        private Duration retention = Duration.ofHours(24);
+        private boolean normalizedQueryStorage = false;
+
+        public Duration getQueryRetention() {
+            return retention;
+        }
+
+        public void setQueryRetention(Duration duration) {
+            this.retention = duration;
+        }
     }
 
     @Getter
@@ -147,11 +156,11 @@ public class SearchProperties {
             if (analytics.getMaximumQueryEntries() <= 0 || analytics.getMaximumQueryEntries() > 100000) {
                 throw new IllegalStateException("Analytics maximum-query-entries must be between 1 and 100000");
             }
-            if (analytics.getTopQueryLimit() < 1 || analytics.getTopQueryLimit() > 100) {
-                throw new IllegalStateException("Analytics top-query-limit must be between 1 and 100");
+            if (analytics.getTopQueryLimit() < 1 || analytics.getTopQueryLimit() > analytics.getMaximumQueryEntries()) {
+                throw new IllegalStateException("Analytics top-query-limit must be between 1 and maximum-query-entries");
             }
-            if (analytics.getQueryRetention() == null || analytics.getQueryRetention().isNegative() || analytics.getQueryRetention().isZero()) {
-                throw new IllegalStateException("Analytics query-retention must be greater than 0");
+            if (analytics.getRetention() == null || analytics.getRetention().isNegative() || analytics.getRetention().isZero()) {
+                throw new IllegalStateException("Analytics retention must be greater than 0");
             }
         }
         if (synonyms.isEnabled()) {

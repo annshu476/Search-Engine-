@@ -4,12 +4,14 @@ import com.searchengine.indexer.analytics.SearchAnalyticsService;
 import com.searchengine.indexer.config.IndexerElasticsearchProperties;
 import com.searchengine.indexer.config.SearchProperties;
 import com.searchengine.indexer.exception.SearchQueryException;
+import com.searchengine.indexer.model.analytics.SearchAnalyticsEvent;
 import com.searchengine.indexer.model.dto.SearchFilter;
 import com.searchengine.indexer.model.dto.SearchResponse;
 import com.searchengine.indexer.model.dto.SearchResult;
 import com.searchengine.indexer.model.search.ParsedSearchQuery;
 import com.searchengine.indexer.model.search.SearchCacheKey;
 import com.searchengine.indexer.search.ElasticsearchSearchQueryBuilder;
+import com.searchengine.indexer.search.SearchQueryEnhancer;
 import com.searchengine.indexer.search.SearchQueryParser;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.SortOrder;
@@ -43,6 +45,7 @@ public class SearchService {
     private final SearchProperties searchProperties;
     private final ElasticsearchSearchQueryBuilder searchQueryBuilder;
     private final SearchQueryParser searchQueryParser;
+    private final SearchQueryEnhancer searchQueryEnhancer;
     private final SearchCacheService searchCacheService;
     private final SearchAnalyticsService searchAnalyticsService;
     private final SearchSpellCorrectionService searchSpellCorrectionService;
@@ -58,7 +61,6 @@ public class SearchService {
 
     public SearchResponse search(String query, String language, String contentType, Integer statusCode, String fromDate, String toDate, int page, int size, String sort) {
         meterRegistry.counter("search.requests").increment();
-        searchAnalyticsService.recordRequest();
         long requestStartTime = System.currentTimeMillis();
 
         try {
@@ -129,17 +131,20 @@ public class SearchService {
                     parsedFromDate, parsedToDate, searchCacheService.getConfigVersion()
             );
 
+            SearchFilter filter = new SearchFilter(validatedLanguage, validatedContentType, validatedStatusCode, parsedFromDate, parsedToDate);
+
             SearchResponse cachedResponse = searchCacheService.get(cacheKey);
             if (cachedResponse != null) {
                 long cacheDurationMs = System.currentTimeMillis() - requestStartTime;
-                searchAnalyticsService.recordSuccess(trimmedQuery, cachedResponse.totalHits(), cacheDurationMs);
+                recordAnalyticsSafe(trimmedQuery, parsedQuery, filter, true, cachedResponse, cacheDurationMs, true, false, false, false, null);
                 return cachedResponse;
             }
 
-            SearchFilter filter = new SearchFilter(validatedLanguage, validatedContentType, validatedStatusCode, parsedFromDate, parsedToDate);
             String indexName = indexerElasticsearchProperties.getIndexName();
             Query esQuery = searchQueryBuilder.buildSearchQuery(parsedQuery, filter);
             Highlight highlightConfig = searchQueryBuilder.buildHighlight();
+
+            boolean synonymUsed = searchQueryEnhancer != null && !searchQueryEnhancer.getSynonymsForTerms(parsedQuery).isEmpty();
 
             try {
                 co.elastic.clients.elasticsearch.core.SearchResponse<Map> esResponse = elasticsearchClient.search(s -> {
@@ -177,16 +182,21 @@ public class SearchService {
                 List<SearchResult> results = extractResults(esResponse);
 
                 meterRegistry.counter("search.success").increment();
-                searchAnalyticsService.recordSuccess(trimmedQuery, totalHits, durationMs);
                 log.info("SEARCH_QUERY_EXECUTED query={} page={} size={} sort={} totalHits={} totalPages={} returnedResults={} durationMs={}",
                         query, page, size, normalizedSort, totalHits, totalPages, results.size(), durationMs);
 
                 SearchResponse searchResponse = new SearchResponse(query, totalHits, page, size, totalPages, normalizedSort, results);
 
+                boolean spellAttempted = false;
+                boolean spellApplied = false;
+                String correctedQueryHash = null;
+                SearchResponse finalResponse = searchResponse;
+
                 if (totalHits == 0 && searchProperties.getSpellCorrection().isEnabled()) {
                     try {
                         String suggestedQuery = searchSpellCorrectionService.suggestCorrection(trimmedQuery, parsedQuery);
                         if (suggestedQuery != null && !suggestedQuery.equalsIgnoreCase(trimmedQuery)) {
+                            spellAttempted = true;
                             log.info("SEARCH_QUERY_CORRECTION_ATTEMPT query=\"{}\"", trimmedQuery);
                             meterRegistry.counter("search.correction.attempts").increment();
 
@@ -217,17 +227,17 @@ public class SearchService {
 
                             long correctedTotalHits = correctedEsResp.hits().total() != null ? correctedEsResp.hits().total().value() : 0L;
                             if (correctedTotalHits > 0) {
+                                spellApplied = true;
+                                correctedQueryHash = SearchAnalyticsService.computeQueryHash(suggestedQuery);
                                 int correctedTotalPages = size > 0 ? (int) Math.ceil((double) correctedTotalHits / size) : 0;
                                 List<SearchResult> correctedResults = extractResults(correctedEsResp);
 
                                 log.info("SEARCH_QUERY_CORRECTED original=\"{}\" corrected=\"{}\"", trimmedQuery, suggestedQuery);
                                 meterRegistry.counter("search.correction.applied").increment();
 
-                                SearchResponse responseWithCorrection = new SearchResponse(
+                                finalResponse = new SearchResponse(
                                         query, suggestedQuery, correctedTotalHits, page, size, correctedTotalPages, normalizedSort, correctedResults
                                 );
-                                searchCacheService.put(cacheKey, responseWithCorrection);
-                                return responseWithCorrection;
                             } else {
                                 log.info("SEARCH_QUERY_CORRECTION_NONE query=\"{}\"", trimmedQuery);
                                 meterRegistry.counter("search.correction.failed").increment();
@@ -238,12 +248,14 @@ public class SearchService {
                     }
                 }
 
-                searchCacheService.put(cacheKey, searchResponse);
+                searchCacheService.put(cacheKey, finalResponse);
 
-                return searchResponse;
+                recordAnalyticsSafe(trimmedQuery, parsedQuery, filter, true, finalResponse, durationMs, false, synonymUsed, spellAttempted, spellApplied, correctedQueryHash);
+
+                return finalResponse;
 
             } catch (Exception e) {
-                searchAnalyticsService.recordFailure();
+                recordFailureSafe();
                 if (isTimeoutException(e)) {
                     meterRegistry.counter("search.timeouts").increment();
                     meterRegistry.counter("search.errors").increment();
@@ -258,6 +270,57 @@ public class SearchService {
 
         } catch (RuntimeException e) {
             throw e;
+        }
+    }
+
+    private void recordAnalyticsSafe(
+            String trimmedQuery, ParsedSearchQuery parsedQuery, SearchFilter filter,
+            boolean successful, SearchResponse response, long durationMs, boolean cacheHit,
+            boolean synonymUsed, boolean spellAttempted, boolean spellApplied, String correctedQueryHash
+    ) {
+        try {
+            boolean hasFilters = filter != null && filter.hasFilters();
+            boolean hasAdvancedSyntax = parsedQuery != null && (
+                    !parsedQuery.exactPhrases().isEmpty() ||
+                    !parsedQuery.requiredTerms().isEmpty() ||
+                    !parsedQuery.requiredPhrases().isEmpty() ||
+                    !parsedQuery.excludedTerms().isEmpty() ||
+                    !parsedQuery.excludedPhrases().isEmpty()
+            );
+
+            String queryHash = SearchAnalyticsService.computeQueryHash(trimmedQuery);
+            SearchAnalyticsEvent event = new SearchAnalyticsEvent(
+                    Instant.now(),
+                    queryHash,
+                    trimmedQuery,
+                    successful,
+                    response != null && response.totalHits() == 0,
+                    response != null && response.results() != null ? response.results().size() : 0,
+                    response != null ? response.totalHits() : 0L,
+                    durationMs,
+                    response != null ? response.page() : 0,
+                    response != null ? response.size() : 10,
+                    response != null ? response.sort() : "relevance",
+                    cacheHit,
+                    searchProperties.getFuzzy().isEnabled(),
+                    synonymUsed,
+                    spellAttempted,
+                    spellApplied,
+                    correctedQueryHash,
+                    hasFilters,
+                    hasAdvancedSyntax
+            );
+            searchAnalyticsService.recordSearch(event);
+        } catch (Exception e) {
+            log.warn("SEARCH_ANALYTICS_RECORDING_FAILED error={}", e.getMessage());
+        }
+    }
+
+    private void recordFailureSafe() {
+        try {
+            searchAnalyticsService.recordFailure();
+        } catch (Exception e) {
+            log.warn("SEARCH_ANALYTICS_RECORDING_FAILED error={}", e.getMessage());
         }
     }
 
@@ -295,7 +358,11 @@ public class SearchService {
 
     private void recordValidationError() {
         meterRegistry.counter("search.validation.errors").increment();
-        searchAnalyticsService.recordValidationError();
+        try {
+            searchAnalyticsService.recordValidationError();
+        } catch (Exception e) {
+            log.warn("SEARCH_ANALYTICS_RECORDING_FAILED error={}", e.getMessage());
+        }
     }
 
     private boolean isTimeoutException(Exception e) {
