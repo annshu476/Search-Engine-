@@ -40,7 +40,7 @@ class SearchDocumentIndexerIntegrationTest {
     private SearchSuggestionService searchSuggestionService;
 
     @Test
-    void endToEndElasticsearchIndexingPaginationRelevanceFuzzyHighlightingSuggestionsFiltersPhraseMatchingAndAdvancedQuerySyntax() throws Exception {
+    void endToEndElasticsearchIndexingPaginationRelevanceFuzzyHighlightingSuggestionsFiltersPhraseMatchingAdvancedQuerySyntaxAndCaching() throws Exception {
         // 1. Verify index created by initializer
         indexInitializer.initializeIndex();
         boolean indexExists = elasticsearchClient.indices().exists(e -> e.index("search-documents")).value();
@@ -258,5 +258,33 @@ class SearchDocumentIndexerIntegrationTest {
         assertThatThrownBy(() -> searchService.search("advspring", 1001, 10, "relevance"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Requested page is too deep");
+
+        // 12. Test Feature 14 Caching & Invalidation Integration
+        SearchDocument cacheDoc1 = new SearchDocument(
+                "https://searchengine.org/cache1", "https://searchengine.org/cache1", "hash-cache-1",
+                "CacheTestKeyword Initial Title", "Meta description for cache doc 1", List.of("Cache"),
+                "Body content for cache test keyword", "en", 100, 200, "text/html", now, now
+        );
+        searchDocumentIndexer.index(cacheDoc1);
+        elasticsearchClient.indices().refresh(r -> r.index("search-documents"));
+
+        SearchResponse cacheResp1 = searchService.search("CacheTestKeyword", 0, 10, "relevance");
+        assertThat(cacheResp1.totalHits()).isGreaterThanOrEqualTo(1L);
+
+        // Subsequent search returns cached response
+        SearchResponse cacheResp2 = searchService.search("CacheTestKeyword", 0, 10, "relevance");
+        assertThat(cacheResp2.totalHits()).isEqualTo(cacheResp1.totalHits());
+
+        // Indexing a new document invalidates search cache
+        SearchDocument cacheDoc2 = new SearchDocument(
+                "https://searchengine.org/cache2", "https://searchengine.org/cache2", "hash-cache-2",
+                "CacheTestKeyword Second Title", "Meta description for cache doc 2", List.of("Cache"),
+                "Body content for cache test keyword second document", "en", 100, 200, "text/html", now, now
+        );
+        searchDocumentIndexer.index(cacheDoc2);
+        elasticsearchClient.indices().refresh(r -> r.index("search-documents"));
+
+        SearchResponse cacheResp3 = searchService.search("CacheTestKeyword", 0, 10, "relevance");
+        assertThat(cacheResp3.totalHits()).isEqualTo(cacheResp1.totalHits() + 1);
     }
 }

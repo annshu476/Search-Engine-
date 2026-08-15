@@ -41,6 +41,12 @@
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
 
+        <!-- Caffeine In-Memory Cache -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+        </dependency>
+
         <!-- Official Elasticsearch Java Client -->
         <dependency>
             <groupId>co.elastic.clients</groupId>

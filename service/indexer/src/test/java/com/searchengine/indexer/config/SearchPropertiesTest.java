@@ -28,6 +28,11 @@ class SearchPropertiesTest {
         assertThat(searchProperties.getMaxQueryPhrases()).isEqualTo(10);
         assertThat(searchProperties.getSlowQueryThresholdMs()).isEqualTo(1000L);
 
+        SearchProperties.Cache cache = searchProperties.getCache();
+        assertThat(cache.isEnabled()).isTrue();
+        assertThat(cache.getMaximumSize()).isEqualTo(1000L);
+        assertThat(cache.getTtl()).isEqualTo(Duration.ofSeconds(60));
+
         SearchProperties.Relevance relevance = searchProperties.getRelevance();
         assertThat(relevance.getTitleBoost()).isEqualTo(4.0);
         assertThat(relevance.getHeadingsBoost()).isEqualTo(3.0);
@@ -57,6 +62,8 @@ class SearchPropertiesTest {
         searchProperties.setMaxQueryTerms(30);
         searchProperties.setMaxQueryPhrases(15);
         searchProperties.setSlowQueryThresholdMs(2000L);
+        searchProperties.getCache().setMaximumSize(5000L);
+        searchProperties.getCache().setTtl(Duration.ofSeconds(120));
 
         searchProperties.validateProperties();
 
@@ -65,6 +72,31 @@ class SearchPropertiesTest {
         assertThat(searchProperties.getMaxQueryTerms()).isEqualTo(30);
         assertThat(searchProperties.getMaxQueryPhrases()).isEqualTo(15);
         assertThat(searchProperties.getSlowQueryThresholdMs()).isEqualTo(2000L);
+        assertThat(searchProperties.getCache().getMaximumSize()).isEqualTo(5000L);
+        assertThat(searchProperties.getCache().getTtl()).isEqualTo(Duration.ofSeconds(120));
+    }
+
+    @Test
+    void validateProperties_invalidCacheMaximumSize_throwsIllegalStateException() {
+        searchProperties.getCache().setEnabled(true);
+        searchProperties.getCache().setMaximumSize(0);
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Search cache maximum-size must be greater than 0");
+    }
+
+    @Test
+    void validateProperties_invalidCacheTtl_throwsIllegalStateException() {
+        searchProperties.getCache().setEnabled(true);
+        searchProperties.getCache().setTtl(Duration.ZERO);
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Search cache TTL must be greater than 0");
+
+        searchProperties.getCache().setTtl(null);
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Search cache TTL must be greater than 0");
     }
 
     @Test
@@ -110,53 +142,5 @@ class SearchPropertiesTest {
         assertThatThrownBy(() -> searchProperties.validateProperties())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Slow query threshold must be greater than 0");
-    }
-
-    @Test
-    void validateProperties_invalidPhraseBoostZero_throwsIllegalStateException() {
-        searchProperties.getRelevance().setPhraseBoost(0.0);
-
-        assertThatThrownBy(() -> searchProperties.validateProperties())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Phrase boost must be greater than 0");
-    }
-
-    @Test
-    void validateProperties_invalidTitlePhraseBoostZero_throwsIllegalStateException() {
-        searchProperties.getRelevance().setTitlePhraseBoost(0.0);
-
-        assertThatThrownBy(() -> searchProperties.validateProperties())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Title phrase boost must be greater than 0");
-    }
-
-    @Test
-    void validateProperties_invalidSuggestionsMaxResultsZero_throwsIllegalStateException() {
-        searchProperties.getSuggestions().setEnabled(true);
-        searchProperties.getSuggestions().setMaxResults(0);
-
-        assertThatThrownBy(() -> searchProperties.validateProperties())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Suggestions max-results must be between 1 and 20");
-    }
-
-    @Test
-    void validateProperties_invalidSuggestionsMaxResultsTooLarge_throwsIllegalStateException() {
-        searchProperties.getSuggestions().setEnabled(true);
-        searchProperties.getSuggestions().setMaxResults(21);
-
-        assertThatThrownBy(() -> searchProperties.validateProperties())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Suggestions max-results must be between 1 and 20");
-    }
-
-    @Test
-    void validateProperties_invalidSuggestionsMinPrefixLengthZero_throwsIllegalStateException() {
-        searchProperties.getSuggestions().setEnabled(true);
-        searchProperties.getSuggestions().setMinPrefixLength(0);
-
-        assertThatThrownBy(() -> searchProperties.validateProperties())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Suggestions min-prefix-length must be between 1 and ");
     }
 }

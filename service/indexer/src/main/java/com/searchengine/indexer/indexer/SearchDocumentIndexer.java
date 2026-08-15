@@ -4,6 +4,7 @@ import com.searchengine.indexer.config.IndexerElasticsearchProperties;
 import com.searchengine.indexer.exception.ElasticsearchIndexingException;
 import com.searchengine.indexer.mapper.SearchDocumentMapper;
 import com.searchengine.indexer.model.kafka.SearchDocument;
+import com.searchengine.indexer.service.SearchCacheService;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch.core.IndexResponse;
 import lombok.RequiredArgsConstructor;
@@ -20,6 +21,7 @@ public class SearchDocumentIndexer {
     private final ElasticsearchClient elasticsearchClient;
     private final SearchDocumentMapper searchDocumentMapper;
     private final IndexerElasticsearchProperties indexerElasticsearchProperties;
+    private final SearchCacheService searchCacheService;
 
     public void index(SearchDocument document) {
         if (document == null) {
@@ -38,6 +40,8 @@ public class SearchDocumentIndexer {
 
             log.info("SEARCH_DOCUMENT_INDEXED urlHash={} index={} result={}",
                     document.urlHash(), indexName, response.result().jsonValue());
+
+            searchCacheService.invalidateAll();
         } catch (Exception e) {
             log.error("SEARCH_DOCUMENT_INDEX_FAILED urlHash={} index={}", document.urlHash(), indexName, e);
             throw new ElasticsearchIndexingException("Failed to index SearchDocument with urlHash: " + document.urlHash(), e);

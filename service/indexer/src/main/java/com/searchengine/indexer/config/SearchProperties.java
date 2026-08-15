@@ -23,10 +23,19 @@ public class SearchProperties {
     private int maxQueryPhrases = 10;
     private long slowQueryThresholdMs = 1000;
 
+    private Cache cache = new Cache();
     private Relevance relevance = new Relevance();
     private Fuzzy fuzzy = new Fuzzy();
     private Highlight highlight = new Highlight();
     private Suggestions suggestions = new Suggestions();
+
+    @Getter
+    @Setter
+    public static class Cache {
+        private boolean enabled = true;
+        private long maximumSize = 1000;
+        private Duration ttl = Duration.ofSeconds(60);
+    }
 
     @Getter
     @Setter
@@ -80,6 +89,14 @@ public class SearchProperties {
         }
         if (slowQueryThresholdMs <= 0) {
             throw new IllegalStateException("Slow query threshold must be greater than 0");
+        }
+        if (cache.isEnabled()) {
+            if (cache.getMaximumSize() <= 0) {
+                throw new IllegalStateException("Search cache maximum-size must be greater than 0");
+            }
+            if (cache.getTtl() == null || cache.getTtl().isNegative() || cache.getTtl().isZero()) {
+                throw new IllegalStateException("Search cache TTL must be greater than 0");
+            }
         }
         if (relevance.getTitleBoost() <= 0) {
             throw new IllegalStateException("Title boost must be greater than 0");

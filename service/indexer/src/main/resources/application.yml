@@ -38,6 +38,10 @@ indexer:
     max-query-terms: ${SEARCH_MAX_QUERY_TERMS:20}
     max-query-phrases: ${SEARCH_MAX_QUERY_PHRASES:10}
     slow-query-threshold-ms: ${SEARCH_SLOW_QUERY_THRESHOLD_MS:1000}
+    cache:
+      enabled: ${SEARCH_CACHE_ENABLED:true}
+      maximum-size: ${SEARCH_CACHE_MAXIMUM_SIZE:1000}
+      ttl: ${SEARCH_CACHE_TTL:60s}
     relevance:
       title-boost: ${SEARCH_TITLE_BOOST:4.0}
       headings-boost: ${SEARCH_HEADINGS_BOOST:3.0}

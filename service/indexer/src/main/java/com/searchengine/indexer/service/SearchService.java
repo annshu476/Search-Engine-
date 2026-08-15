@@ -7,6 +7,7 @@ import com.searchengine.indexer.model.dto.SearchFilter;
 import com.searchengine.indexer.model.dto.SearchResponse;
 import com.searchengine.indexer.model.dto.SearchResult;
 import com.searchengine.indexer.model.search.ParsedSearchQuery;
+import com.searchengine.indexer.model.search.SearchCacheKey;
 import com.searchengine.indexer.search.ElasticsearchSearchQueryBuilder;
 import com.searchengine.indexer.search.SearchQueryParser;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
@@ -15,7 +16,6 @@ import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch.core.search.Highlight;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -33,11 +33,16 @@ import java.util.concurrent.TimeUnit;
 @RequiredArgsConstructor
 public class SearchService {
 
+    private static final List<String> SOURCE_INCLUDES = List.of(
+            "url", "canonicalUrl", "urlHash", "title", "metaDescription", "language", "wordCount", "statusCode"
+    );
+
     private final ElasticsearchClient elasticsearchClient;
     private final IndexerElasticsearchProperties indexerElasticsearchProperties;
     private final SearchProperties searchProperties;
     private final ElasticsearchSearchQueryBuilder searchQueryBuilder;
     private final SearchQueryParser searchQueryParser;
+    private final SearchCacheService searchCacheService;
     private final MeterRegistry meterRegistry;
 
     public SearchResponse search(String query) {
@@ -107,6 +112,17 @@ public class SearchService {
             }
             int from = (int) fromOffset;
 
+            SearchCacheKey cacheKey = new SearchCacheKey(
+                    trimmedQuery, page, size, normalizedSort,
+                    validatedLanguage, validatedContentType, validatedStatusCode,
+                    parsedFromDate, parsedToDate, searchCacheService.getConfigVersion()
+            );
+
+            SearchResponse cachedResponse = searchCacheService.get(cacheKey);
+            if (cachedResponse != null) {
+                return cachedResponse;
+            }
+
             SearchFilter filter = new SearchFilter(validatedLanguage, validatedContentType, validatedStatusCode, parsedFromDate, parsedToDate);
             String indexName = indexerElasticsearchProperties.getIndexName();
             Query esQuery = searchQueryBuilder.buildSearchQuery(parsedQuery, filter);
@@ -119,6 +135,7 @@ public class SearchService {
                     s.index(indexName)
                             .from(from)
                             .size(size)
+                            .source(src -> src.filter(f -> f.includes(SOURCE_INCLUDES)))
                             .timeout(searchProperties.getTimeout().toMillis() + "ms")
                             .query(esQuery);
 
@@ -179,7 +196,10 @@ public class SearchService {
                 log.info("SEARCH_QUERY_EXECUTED query={} page={} size={} sort={} totalHits={} totalPages={} returnedResults={} durationMs={}",
                         query, page, size, normalizedSort, totalHits, totalPages, results.size(), durationMs);
 
-                return new SearchResponse(query, totalHits, page, size, totalPages, normalizedSort, results);
+                SearchResponse searchResponse = new SearchResponse(query, totalHits, page, size, totalPages, normalizedSort, results);
+                searchCacheService.put(cacheKey, searchResponse);
+
+                return searchResponse;
 
             } catch (Exception e) {
                 if (isTimeoutException(e)) {

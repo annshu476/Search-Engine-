@@ -1,6 +1,6 @@
 # Indexer Service
 
-The **Indexer Service** is Service 3 in the Search Engine pipeline. Its primary role is to consume processed document content from Kafka (`search-document-topic`), index the documents into Elasticsearch using explicit mappings, and expose REST Search APIs for querying indexed content with field-weighted relevance scoring, phrase matching, advanced query syntax & operators, production-hardened resilience, fuzzy typo tolerance, search result highlighting, search suggestions / autocomplete, advanced search filters, pagination, and sorting support.
+The **Indexer Service** is Service 3 in the Search Engine pipeline. Its primary role is to consume processed document content from Kafka (`search-document-topic`), index the documents into Elasticsearch using explicit mappings, and expose REST Search APIs for querying indexed content with field-weighted relevance scoring, phrase matching, advanced query syntax & operators, production-hardened resilience, response optimization, in-memory caching, fuzzy typo tolerance, search result highlighting, search suggestions / autocomplete, advanced search filters, pagination, and sorting support.
 
 ---
 
@@ -23,11 +23,11 @@ SearchDocumentConsumer
     ↓
 IndexerService
     ↓
-SearchDocumentIndexer
+SearchDocumentIndexer (Invalidates Search Cache on Indexing Success)
     ↓
 Elasticsearch (search-documents)
-    ├── SearchService           → GET /api/search?q={query}&language={lang}&contentType={type}&statusCode={status}&fromDate={from}&toDate={to}&page={page}&size={size}&sort={sort}
-    └── SearchSuggestionService → GET /api/search/suggest?q={prefix}
+    ├── SearchService (Source Filtering + Caffeine Cache) → GET /api/search?q={query}&language={lang}&contentType={type}&statusCode={status}&fromDate={from}&toDate={to}&page={page}&size={size}&sort={sort}
+    └── SearchSuggestionService                          → GET /api/search/suggest?q={prefix}
 ```
 
 ---
@@ -102,6 +102,7 @@ Elasticsearch (search-documents)
 - Enforces a minimum prefix length of 2 characters (`min-prefix-length: 2`).
 - Returns clean `SearchSuggestionResponse` DTO containing `query` and `suggestions` list (`List<String>`).
 - Normalizes and deduplicates candidates deterministically while respecting `max-results: 8`.
+- Suggestions endpoints are intentionally NOT cached to provide live completion candidates.
 
 ### Feature 10 — Advanced Search Filters
 - Extends `GET /api/search` with optional query filters:
@@ -129,14 +130,20 @@ Elasticsearch (search-documents)
   - **Required Term / Phrase**: `+java` or `+"spring boot"` (term/phrase MUST appear in document).
   - **Excluded Term / Phrase**: `-xml` or `-"spring boot"` (documents containing term/phrase are eliminated via `must_not` non-scoring clause).
   - **Combined Query**: `"spring boot" +java -xml` (matches exact phrase `"spring boot"` and required term `java`, excluding `xml`).
-- Error Handling: Invalid syntax (unclosed quotes, standalone operators `+`/`-`, operator with whitespace `+ spring`, empty phrases `""`, or queries with no positive terms like `-xml`) returns HTTP 400 with `{"error": "Invalid search query syntax"}` via `SearchQuerySyntaxException`.
+- Error Handling: Invalid syntax returns HTTP 400 with `{"error": "Invalid search query syntax"}` via `SearchQuerySyntaxException`.
 
 ### Feature 13 — Search Production Hardening
-- **Search Request Timeout**: Configurable search-level timeout (`timeout: 3s`). If Elasticsearch exceeds the search timeout or becomes unreachable, the service catches the exception and returns `HTTP 503 Service Unavailable` with `{"error": "Search service temporarily unavailable"}`. Internal details and stack traces are never exposed.
-- **Deep Pagination Protection**: Enforces a configurable maximum offset limit (`max-page-depth: 10000`). If `page * size > maxPageDepth` or integer overflow occurs (`page = Integer.MAX_VALUE`), the request is safely rejected with `HTTP 400 Bad Request` (`{"error": "Requested page is too deep"}`).
-- **Query Complexity & Term/Phrase Limits**: Enforces post-parse query term limits (`max-query-terms: 20`) and phrase limits (`max-query-phrases: 10`). If exceeded, returns `HTTP 400 Bad Request` (`{"error": "Search query is too complex"}`).
-- **Micrometer Metrics & Observability**: Tracks search metrics (`search.requests`, `search.success`, `search.errors`, `search.validation.errors`, `search.timeouts`, `search.duration`) exposed via `/actuator/prometheus`. Raw query text and high-cardinality values are strictly excluded from metric labels.
-- **Structured Timing & Slow Query Logging**: Emits concise structured timing logs (`SEARCH_QUERY_EXECUTED durationMs=...`) and warns on queries exceeding threshold (`slow-query-threshold-ms: 1000`).
+- **Search Request Timeout**: Configurable search-level timeout (`timeout: 3s`). Returns `HTTP 503 Service Unavailable` on timeout.
+- **Deep Pagination Protection**: Enforces a configurable maximum offset limit (`max-page-depth: 10000`). Returns `HTTP 400 Bad Request` if `page * size > maxPageDepth` or integer overflow occurs.
+- **Query Complexity Limits**: Enforces query term limits (`max-query-terms: 20`) and phrase limits (`max-query-phrases: 10`).
+- **Observability**: Tracks search metrics (`search.requests`, `search.success`, `search.errors`, `search.validation.errors`, `search.timeouts`, `search.duration`).
+
+### Feature 14 — Search Performance, Caching & Response Optimization
+- **Elasticsearch Source Filtering**: Configures Elasticsearch search requests to return only fields required by `SearchResult`: `url`, `canonicalUrl`, `urlHash`, `title`, `metaDescription`, `language`, `wordCount`, `statusCode`. Large unused fields (`bodyText`, `headings`, `contentType`, `fetchedAt`, `indexedAt`) are excluded from payload transfer while highlighting for `title`, `headings`, `metaDescription`, and `bodyText` remains fully functional.
+- **Application-Level Search Cache**: Bounded in-memory Caffeine cache (`SearchCacheService`) storing successful `GET /api/search` responses. Configured under `indexer.search.cache` (`enabled: true`, `maximum-size: 1000`, `ttl: 60s`).
+- **Deterministic Cache Key**: Immutable `SearchCacheKey` incorporating trimmed query string, `page`, `size`, `sort`, all search filters (`language`, `contentType`, `statusCode`, `fromDate`, `toDate`), and configuration version namespace to prevent stale responses across config changes.
+- **Cache Invalidation on Indexing**: Automatically clears/invalidates cached search responses when `SearchDocumentIndexer.index(document)` succeeds. Indexing failures leave cache untouched.
+- **Cache Metrics & Logging**: Emits Micrometer metrics (`search.cache.hit`, `search.cache.miss`, `search.cache.put`) tagged with `operation="search"` and logs structured events (`SEARCH_CACHE_HIT`, `SEARCH_CACHE_MISS`, `SEARCH_CACHE_PUT`, `SEARCH_CACHE_INVALIDATED`).
 
 > [!NOTE]
 > **Intentionally NOT implemented yet**: Semantic/vector search, spell correction, synonyms, query history, or personalized recommendations.
@@ -152,7 +159,7 @@ service/indexer/src/main/java/com/searchengine/indexer/
 │   ├── ElasticsearchConfig.java                # Bean definitions for RestClient, ElasticsearchTransport, and ElasticsearchClient
 │   ├── ElasticsearchProperties.java            # Connection configuration properties prefixed with 'elasticsearch'
 │   ├── IndexerElasticsearchProperties.java     # Index configuration properties prefixed with 'indexer.elasticsearch'
-│   └── SearchProperties.java                   # Search API configuration properties (including hardening limits)
+│   └── SearchProperties.java                   # Search API configuration properties (including cache and hardening limits)
 ├── consumer/
 │   └── SearchDocumentConsumer.java             # Kafka listener for search-document-topic using manual ACK
 ├── controller/
@@ -167,28 +174,30 @@ service/indexer/src/main/java/com/searchengine/indexer/
 ├── health/
 │   └── ElasticsearchHealthIndicator.java        # Custom Spring Boot Actuator HealthIndicator for Elasticsearch ping
 ├── indexer/
-│   └── SearchDocumentIndexer.java             # Indexes SearchDocument records into Elasticsearch using urlHash as _id
+│   └── SearchDocumentIndexer.java             # Indexes SearchDocument records into Elasticsearch and invalidates search cache
 ├── initializer/
 │   └── SearchDocumentIndexInitializer.java     # Checks and creates search-documents index with explicit mapping on startup
 ├── mapper/
 │   └── SearchDocumentMapper.java               # Maps SearchDocument records to Elasticsearch document Map
 ├── model/
 │   ├── dto/
-│   │   ├── SearchFilter.java                   # Filter parameters record DTO (language, contentType, statusCode, fromDate, toDate)
+│   │   ├── SearchFilter.java                   # Filter parameters record DTO
 │   │   ├── SearchResponse.java                 # Search API response wrapper
 │   │   ├── SearchResult.java                   # Individual search hit DTO
 │   │   └── SearchSuggestionResponse.java       # Suggestion API response DTO
 │   ├── kafka/
 │   │   └── SearchDocument.java                 # Exact V1 SearchDocument record contract
 │   └── search/
-│       └── ParsedSearchQuery.java              # Advanced query syntax parser DTO (normalTerms, exactPhrases, requiredTerms, excludedTerms)
+│       ├── ParsedSearchQuery.java              # Advanced query syntax parser DTO
+│       └── SearchCacheKey.java                 # Deterministic search cache key record
 ├── search/
 │   ├── ElasticsearchSearchQueryBuilder.java   # Builds bool search queries combining multi-match, phrase boosts, operators, filters, highlighting
 │   ├── ElasticsearchSuggestionQueryBuilder.java # Builds phrase_prefix multi-match queries for suggestions
 │   └── SearchQueryParser.java                  # Parses raw query string into ParsedSearchQuery model
 ├── service/
 │   ├── IndexerService.java                     # Domain service orchestrating document indexing
-│   ├── SearchService.java                      # Service executing filtered, hardened search queries
+│   ├── SearchCacheService.java                 # In-memory Caffeine search cache manager with metrics and logging
+│   ├── SearchService.java                      # Service executing source-filtered, cached, hardened search queries
 │   └── SearchSuggestionService.java            # Service executing prefix suggestion queries
 └── validator/
     └── SearchDocumentValidator.java            # Validates SearchDocument required fields and bounds
@@ -217,6 +226,9 @@ Default Port: `8083`
 | `indexer.search.max-query-terms` | `20` | `SEARCH_MAX_QUERY_TERMS` | Maximum allowed meaningful terms per query |
 | `indexer.search.max-query-phrases` | `10` | `SEARCH_MAX_QUERY_PHRASES` | Maximum allowed exact phrases per query |
 | `indexer.search.slow-query-threshold-ms` | `1000` | `SEARCH_SLOW_QUERY_THRESHOLD_MS` | Threshold in ms to log slow query warnings |
+| `indexer.search.cache.enabled` | `true` | `SEARCH_CACHE_ENABLED` | Enables in-memory Caffeine search response caching |
+| `indexer.search.cache.maximum-size` | `1000` | `SEARCH_CACHE_MAXIMUM_SIZE` | Maximum allowed entries in Caffeine cache |
+| `indexer.search.cache.ttl` | `60s` | `SEARCH_CACHE_TTL` | Cache entry time-to-live after write |
 | `indexer.search.relevance.title-boost` | `4.0` | `SEARCH_TITLE_BOOST` | Field relevance boost for document `title` |
 | `indexer.search.relevance.headings-boost` | `3.0` | `SEARCH_HEADINGS_BOOST` | Field relevance boost for document `headings` |
 | `indexer.search.relevance.meta-description-boost` | `2.0` | `SEARCH_META_DESCRIPTION_BOOST` | Field relevance boost for `metaDescription` |
@@ -233,32 +245,27 @@ Default Port: `8083`
 
 ## API Specification
 
-### Search Endpoint with Hardening, Filters, and Advanced Query Syntax
+### Search Endpoint with Source Filtering and Caching
 ```http
 GET /api/search?q={query}&language={lang}&contentType={type}&statusCode={status}&fromDate={from}&toDate={to}&page={page}&size={size}&sort={sort}
 ```
 
-#### Example Production Requests
+#### Verification & Cache Flow
 
-1. **Standard Search**:
+1. **Initial Search Request (Cache MISS)**:
    ```http
    GET /api/search?q=spring
    ```
+   *Logs*: `SEARCH_CACHE_MISS page=0 size=10 sort=relevance`, `SEARCH_QUERY_EXECUTED durationMs=...`, `SEARCH_CACHE_PUT page=0 size=10 sort=relevance`.
 
-2. **Advanced Operators**:
+2. **Identical Search Request (Cache HIT)**:
    ```http
-   GET /api/search?q=%22spring%20boot%22%20%2Bjava%20-xml
+   GET /api/search?q=spring
    ```
+   *Logs*: `SEARCH_CACHE_HIT page=0 size=10 sort=relevance` (Elasticsearch query bypassed).
 
-3. **Deep Page Protection (HTTP 400)**:
-   ```http
-   GET /api/search?q=spring&page=1001&size=10
-   ```
-
-4. **Query Complexity Protection (HTTP 400)**:
-   ```http
-   GET /api/search?q=t1%20t2%20t3%20t4%20t5%20t6%20t7%20t8%20t9%20t10%20t11%20t12%20t13%20t14%20t15%20t16%20t17%20t18%20t19%20t20%20t21
-   ```
+3. **Cache Invalidation on Document Indexing**:
+   When a new document is indexed via Kafka consumer, `SearchDocumentIndexer.index(doc)` triggers `SEARCH_CACHE_INVALIDATED`. The next query executes against Elasticsearch and repopulates the cache.
 
 ---
 

@@ -4,8 +4,8 @@ import com.searchengine.indexer.config.IndexerElasticsearchProperties;
 import com.searchengine.indexer.exception.ElasticsearchIndexingException;
 import com.searchengine.indexer.mapper.SearchDocumentMapper;
 import com.searchengine.indexer.model.kafka.SearchDocument;
+import com.searchengine.indexer.service.SearchCacheService;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
-import co.elastic.clients.elasticsearch._types.Result;
 import co.elastic.clients.elasticsearch.core.IndexResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -16,13 +16,15 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
 class SearchDocumentIndexerTest {
@@ -30,59 +32,56 @@ class SearchDocumentIndexerTest {
     @Mock
     private ElasticsearchClient elasticsearchClient;
 
+    @Mock
     private SearchDocumentMapper searchDocumentMapper;
-    private IndexerElasticsearchProperties properties;
+
+    @Mock
+    private SearchCacheService searchCacheService;
+
+    private IndexerElasticsearchProperties indexerProperties;
     private SearchDocumentIndexer searchDocumentIndexer;
 
     @BeforeEach
     void setUp() {
-        searchDocumentMapper = new SearchDocumentMapper();
-        properties = new IndexerElasticsearchProperties();
-        properties.setIndexName("custom-search-index");
-        searchDocumentIndexer = new SearchDocumentIndexer(elasticsearchClient, searchDocumentMapper, properties);
+        indexerProperties = new IndexerElasticsearchProperties();
+        indexerProperties.setIndexName("test-search-documents");
+
+        searchDocumentIndexer = new SearchDocumentIndexer(elasticsearchClient, searchDocumentMapper, indexerProperties, searchCacheService);
     }
 
-    private SearchDocument createTestDocument() {
-        Instant now = Instant.now();
-        return new SearchDocument(
-                "https://example.com/test",
-                "https://example.com/test",
-                "hashUrl123",
-                "Title",
-                "Description",
-                List.of("H1"),
-                "Body content",
-                "en",
-                10,
-                200,
-                "text/html",
-                now,
-                now
+    @Test
+    void index_successfulIndexing_invalidatesSearchCache() throws IOException {
+        SearchDocument doc = new SearchDocument(
+                "https://example.com", "https://example.com", "hash123",
+                "Title", "Meta", List.of("H1"), "Body", "en", 100, 200, "text/html",
+                Instant.now(), Instant.now()
         );
+
+        given(searchDocumentMapper.toMap(doc)).willReturn(Map.of("url", "https://example.com"));
+
+        IndexResponse indexResponse = mock(IndexResponse.class);
+        given(indexResponse.result()).willReturn(co.elastic.clients.elasticsearch._types.Result.Created);
+        given(elasticsearchClient.index(any(Function.class))).willReturn(indexResponse);
+
+        searchDocumentIndexer.index(doc);
+
+        verify(searchCacheService).invalidateAll();
     }
 
     @Test
-    void index_nullDocument_doesNothing() {
-        assertDoesNotThrow(() -> searchDocumentIndexer.index(null));
-    }
+    void index_failedIndexing_doesNotInvalidateSearchCache() throws IOException {
+        SearchDocument doc = new SearchDocument(
+                "https://example.com", "https://example.com", "hash123",
+                "Title", "Meta", List.of("H1"), "Body", "en", 100, 200, "text/html",
+                Instant.now(), Instant.now()
+        );
 
-    @Test
-    void index_validDocument_indexesWithCorrectIndexNameAndUrlHashAsId() throws IOException {
-        SearchDocument doc = createTestDocument();
-        IndexResponse mockResponse = mock(IndexResponse.class);
-        given(mockResponse.result()).willReturn(Result.Created);
-        given(elasticsearchClient.index(any(Function.class))).willReturn(mockResponse);
-
-        assertDoesNotThrow(() -> searchDocumentIndexer.index(doc));
-    }
-
-    @Test
-    void index_elasticsearchException_throwsElasticsearchIndexingException() throws IOException {
-        SearchDocument doc = createTestDocument();
-        given(elasticsearchClient.index(any(Function.class))).willThrow(new RuntimeException("ES Connection Error"));
+        given(searchDocumentMapper.toMap(doc)).willReturn(Map.of("url", "https://example.com"));
+        given(elasticsearchClient.index(any(Function.class))).willThrow(new IOException("Elasticsearch down"));
 
         assertThatThrownBy(() -> searchDocumentIndexer.index(doc))
-                .isInstanceOf(ElasticsearchIndexingException.class)
-                .hasMessageContaining("Failed to index SearchDocument with urlHash: hashUrl123");
+                .isInstanceOf(ElasticsearchIndexingException.class);
+
+        verify(searchCacheService, never()).invalidateAll();
     }
 }
