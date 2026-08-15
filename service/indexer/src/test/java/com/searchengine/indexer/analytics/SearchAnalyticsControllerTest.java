@@ -5,8 +5,13 @@ import com.searchengine.indexer.health.ElasticsearchHealthIndicator;
 import com.searchengine.indexer.initializer.SearchDocumentIndexInitializer;
 import com.searchengine.indexer.model.analytics.SearchAnalyticsSummary;
 import com.searchengine.indexer.model.analytics.SearchQueryStats;
+import com.searchengine.indexer.security.AdminTokenValidator;
+import com.searchengine.indexer.security.ClientIdentityResolver;
+import com.searchengine.indexer.security.SearchRateLimiter;
+import com.searchengine.indexer.security.SearchRequestCostEvaluator;
 import com.searchengine.indexer.service.SearchService;
 import com.searchengine.indexer.service.SearchSuggestionService;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,6 +21,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -46,6 +52,21 @@ class SearchAnalyticsControllerTest {
     @MockitoBean
     private SearchDocumentIndexInitializer searchDocumentIndexInitializer;
 
+    @MockitoBean
+    private SearchRateLimiter searchRateLimiter;
+
+    @MockitoBean
+    private ClientIdentityResolver clientIdentityResolver;
+
+    @MockitoBean
+    private AdminTokenValidator adminTokenValidator;
+
+    @MockitoBean
+    private SearchRequestCostEvaluator searchRequestCostEvaluator;
+
+    @MockitoBean
+    private MeterRegistry meterRegistry;
+
     private SearchProperties.Analytics analyticsConfig;
 
     @BeforeEach
@@ -53,6 +74,11 @@ class SearchAnalyticsControllerTest {
         analyticsConfig = new SearchProperties.Analytics();
         analyticsConfig.setEnabled(true);
         given(searchProperties.getAnalytics()).willReturn(analyticsConfig);
+
+        SearchProperties.RateLimit rateLimitProps = new SearchProperties.RateLimit();
+        rateLimitProps.setEnabled(false);
+        given(searchProperties.getRateLimit()).willReturn(rateLimitProps);
+        given(adminTokenValidator.validateAdminToken(any())).willReturn(true);
     }
 
     @Test

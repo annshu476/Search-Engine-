@@ -33,6 +33,9 @@ public class SearchProperties {
     private Fuzzy fuzzy = new Fuzzy();
     private Highlight highlight = new Highlight();
     private Suggestions suggestions = new Suggestions();
+    private RateLimit rateLimit = new RateLimit();
+    private Admin admin = new Admin();
+    private Redis redis = new Redis();
 
     @Getter
     @Setter
@@ -127,6 +130,55 @@ public class SearchProperties {
         private int minPrefixLength = 2;
     }
 
+    @Getter
+    @Setter
+    public static class RateLimit {
+        private boolean enabled = true;
+        private boolean trustForwardedHeaders = false;
+        private int maximumClientEntries = 10000;
+        private Duration window = Duration.ofMinutes(1);
+        private int maxCostScore = 100;
+
+        private EndpointLimit search = new EndpointLimit(60);
+        private EndpointLimit suggest = new EndpointLimit(120);
+        private EndpointLimit analytics = new EndpointLimit(10);
+        private EndpointLimit evaluation = new EndpointLimit(2);
+        private EndpointLimit analyticsReset = new EndpointLimit(1);
+
+        @Getter
+        @Setter
+        public static class EndpointLimit {
+            private int requestsPerMinute;
+
+            public EndpointLimit() {
+                this.requestsPerMinute = 60;
+            }
+
+            public EndpointLimit(int requestsPerMinute) {
+                this.requestsPerMinute = requestsPerMinute;
+            }
+        }
+    }
+
+    @Getter
+    @Setter
+    public static class Admin {
+        private boolean enabled = true;
+        private String token = "";
+    }
+
+    @Getter
+    @Setter
+    public static class Redis {
+        private boolean enabled = true;
+        private String host = "localhost";
+        private int port = 6379;
+        private String password = "";
+        private Duration timeout = Duration.ofMillis(500);
+        private String keyPrefix = "search-engine:";
+        private boolean failOpen = true;
+    }
+
     @PostConstruct
     public void validateProperties() {
         if (timeout == null || timeout.isNegative() || timeout.isZero()) {
@@ -206,6 +258,43 @@ public class SearchProperties {
             }
             if (evaluation.getMaximumZeroResultRate() < 0.0 || evaluation.getMaximumZeroResultRate() > 1.0) {
                 throw new IllegalStateException("Evaluation maximum-zero-result-rate must be between 0.0 and 1.0");
+            }
+        }
+        if (rateLimit.isEnabled()) {
+            if (rateLimit.getSearch().getRequestsPerMinute() <= 0 ||
+                rateLimit.getSuggest().getRequestsPerMinute() <= 0 ||
+                rateLimit.getAnalytics().getRequestsPerMinute() <= 0 ||
+                rateLimit.getEvaluation().getRequestsPerMinute() <= 0 ||
+                rateLimit.getAnalyticsReset().getRequestsPerMinute() <= 0) {
+                throw new IllegalStateException("Rate limit requests-per-minute must be greater than 0");
+            }
+            if (rateLimit.getMaximumClientEntries() <= 0) {
+                throw new IllegalStateException("Rate limit maximum-client-entries must be greater than 0");
+            }
+            if (rateLimit.getWindow() == null || rateLimit.getWindow().isNegative() || rateLimit.getWindow().isZero()) {
+                throw new IllegalStateException("Rate limit window must be greater than 0");
+            }
+        }
+        if (rateLimit.getMaxCostScore() <= 0) {
+            throw new IllegalStateException("Max query cost score must be greater than 0");
+        }
+        if (admin.isEnabled()) {
+            if (admin.getToken() == null || admin.getToken().isBlank()) {
+                throw new IllegalStateException("Admin token must not be blank when admin security is enabled");
+            }
+        }
+        if (redis.isEnabled()) {
+            if (redis.getHost() == null || redis.getHost().isBlank()) {
+                throw new IllegalStateException("Redis host must not be blank when Redis is enabled");
+            }
+            if (redis.getPort() < 1 || redis.getPort() > 65535) {
+                throw new IllegalStateException("Redis port must be between 1 and 65535");
+            }
+            if (redis.getTimeout() == null || redis.getTimeout().isNegative() || redis.getTimeout().isZero()) {
+                throw new IllegalStateException("Redis timeout must be greater than 0");
+            }
+            if (redis.getKeyPrefix() == null || redis.getKeyPrefix().isBlank()) {
+                throw new IllegalStateException("Redis key-prefix must not be blank");
             }
         }
         if (relevance.getTitleBoost() <= 0) {

@@ -16,6 +16,7 @@ class SearchPropertiesTest {
     @BeforeEach
     void setUp() {
         searchProperties = new SearchProperties();
+        searchProperties.getAdmin().setEnabled(false); // set to false for general unit test setup
     }
 
     @Test
@@ -71,6 +72,14 @@ class SearchPropertiesTest {
         assertThat(suggestions.isEnabled()).isTrue();
         assertThat(suggestions.getMaxResults()).isEqualTo(8);
         assertThat(suggestions.getMinPrefixLength()).isEqualTo(2);
+
+        SearchProperties.RateLimit rateLimit = searchProperties.getRateLimit();
+        assertThat(rateLimit.isEnabled()).isTrue();
+        assertThat(rateLimit.getSearch().getRequestsPerMinute()).isEqualTo(60);
+        assertThat(rateLimit.getSuggest().getRequestsPerMinute()).isEqualTo(120);
+        assertThat(rateLimit.getAnalytics().getRequestsPerMinute()).isEqualTo(10);
+        assertThat(rateLimit.getEvaluation().getRequestsPerMinute()).isEqualTo(2);
+        assertThat(rateLimit.getMaxCostScore()).isEqualTo(100);
     }
 
     @Test
@@ -88,6 +97,8 @@ class SearchPropertiesTest {
         searchProperties.getSynonyms().setMaximumSynonymsPerTerm(10);
         searchProperties.getSpellCorrection().setMaximumSuggestions(5);
         searchProperties.getSpellCorrection().setMinimumTermLength(4);
+        searchProperties.getAdmin().setEnabled(true);
+        searchProperties.getAdmin().setToken("valid-token-secret");
 
         searchProperties.validateProperties();
 
@@ -95,6 +106,16 @@ class SearchPropertiesTest {
         assertThat(searchProperties.getSynonyms().getMaximumSynonymsPerTerm()).isEqualTo(10);
         assertThat(searchProperties.getSpellCorrection().getMaximumSuggestions()).isEqualTo(5);
         assertThat(searchProperties.getSpellCorrection().getMinimumTermLength()).isEqualTo(4);
+    }
+
+    @Test
+    void validateProperties_blankAdminToken_throwsIllegalStateException() {
+        searchProperties.getAdmin().setEnabled(true);
+        searchProperties.getAdmin().setToken("");
+
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Admin token must not be blank");
     }
 
     @Test

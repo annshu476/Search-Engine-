@@ -66,6 +66,33 @@ indexer:
       minimum-hit-at-3: ${SEARCH_EVALUATION_MIN_HIT_AT_3:0.90}
       minimum-recall-at-10: ${SEARCH_EVALUATION_MIN_RECALL_AT_10:0.95}
       maximum-zero-result-rate: ${SEARCH_EVALUATION_MAX_ZERO_RESULT_RATE:0.10}
+    rate-limit:
+      enabled: ${SEARCH_RATE_LIMIT_ENABLED:true}
+      trust-forwarded-headers: ${SEARCH_RATE_LIMIT_TRUST_FORWARDED_HEADERS:false}
+      maximum-client-entries: ${SEARCH_RATE_LIMIT_MAX_CLIENTS:10000}
+      window: ${SEARCH_RATE_LIMIT_WINDOW:1m}
+      max-cost-score: ${SEARCH_MAX_COST_SCORE:100}
+      search:
+        requests-per-minute: ${SEARCH_RATE_LIMIT_SEARCH_RPM:60}
+      suggest:
+        requests-per-minute: ${SEARCH_RATE_LIMIT_SUGGEST_RPM:120}
+      analytics:
+        requests-per-minute: ${SEARCH_RATE_LIMIT_ANALYTICS_RPM:10}
+      evaluation:
+        requests-per-minute: ${SEARCH_RATE_LIMIT_EVALUATION_RPM:2}
+      analytics-reset:
+        requests-per-minute: ${SEARCH_RATE_LIMIT_ANALYTICS_RESET_RPM:1}
+    admin:
+      enabled: ${SEARCH_ADMIN_ENABLED:true}
+      token: ${SEARCH_ADMIN_TOKEN:test-admin-secret-token}
+    redis:
+      enabled: ${SEARCH_REDIS_ENABLED:true}
+      host: ${SEARCH_REDIS_HOST:localhost}
+      port: ${SEARCH_REDIS_PORT:6379}
+      password: ${SEARCH_REDIS_PASSWORD:}
+      timeout: ${SEARCH_REDIS_TIMEOUT:500ms}
+      key-prefix: ${SEARCH_REDIS_KEY_PREFIX:search-engine:}
+      fail-open: ${SEARCH_REDIS_FAIL_OPEN:true}
     relevance:
       title-boost: ${SEARCH_TITLE_BOOST:4.0}
       headings-boost: ${SEARCH_HEADINGS_BOOST:3.0}

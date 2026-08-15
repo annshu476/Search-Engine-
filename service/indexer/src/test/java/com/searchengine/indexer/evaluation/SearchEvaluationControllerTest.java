@@ -1,16 +1,24 @@
 package com.searchengine.indexer.evaluation;
 
+import com.searchengine.indexer.config.SearchProperties;
 import com.searchengine.indexer.health.ElasticsearchHealthIndicator;
 import com.searchengine.indexer.initializer.SearchDocumentIndexInitializer;
 import com.searchengine.indexer.model.evaluation.EvaluationReport;
+import com.searchengine.indexer.security.AdminTokenValidator;
+import com.searchengine.indexer.security.ClientIdentityResolver;
+import com.searchengine.indexer.security.SearchRateLimiter;
+import com.searchengine.indexer.security.SearchRequestCostEvaluator;
 import com.searchengine.indexer.service.SearchService;
 import com.searchengine.indexer.service.SearchSuggestionService;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -36,6 +44,32 @@ class SearchEvaluationControllerTest {
 
     @MockitoBean
     private SearchDocumentIndexInitializer searchDocumentIndexInitializer;
+
+    @MockitoBean
+    private SearchProperties searchProperties;
+
+    @MockitoBean
+    private SearchRateLimiter searchRateLimiter;
+
+    @MockitoBean
+    private ClientIdentityResolver clientIdentityResolver;
+
+    @MockitoBean
+    private AdminTokenValidator adminTokenValidator;
+
+    @MockitoBean
+    private SearchRequestCostEvaluator searchRequestCostEvaluator;
+
+    @MockitoBean
+    private MeterRegistry meterRegistry;
+
+    @BeforeEach
+    void setUp() {
+        SearchProperties.RateLimit rateLimitProps = new SearchProperties.RateLimit();
+        rateLimitProps.setEnabled(false);
+        given(searchProperties.getRateLimit()).willReturn(rateLimitProps);
+        given(adminTokenValidator.validateAdminToken(any())).willReturn(true);
+    }
 
     @Test
     void runEvaluation_returns200AndReportJson() throws Exception {

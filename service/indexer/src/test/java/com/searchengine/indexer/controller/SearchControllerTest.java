@@ -1,5 +1,6 @@
 package com.searchengine.indexer.controller;
 
+import com.searchengine.indexer.config.SearchProperties;
 import com.searchengine.indexer.exception.SearchQueryException;
 import com.searchengine.indexer.exception.SearchQuerySyntaxException;
 import com.searchengine.indexer.exception.SearchSuggestionException;
@@ -8,8 +9,14 @@ import com.searchengine.indexer.initializer.SearchDocumentIndexInitializer;
 import com.searchengine.indexer.model.dto.SearchResponse;
 import com.searchengine.indexer.model.dto.SearchResult;
 import com.searchengine.indexer.model.dto.SearchSuggestionResponse;
+import com.searchengine.indexer.security.AdminTokenValidator;
+import com.searchengine.indexer.security.ClientIdentityResolver;
+import com.searchengine.indexer.security.SearchRateLimiter;
+import com.searchengine.indexer.security.SearchRequestCostEvaluator;
 import com.searchengine.indexer.service.SearchService;
 import com.searchengine.indexer.service.SearchSuggestionService;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -41,6 +48,32 @@ class SearchControllerTest {
 
     @MockitoBean
     private SearchDocumentIndexInitializer searchDocumentIndexInitializer;
+
+    @MockitoBean
+    private SearchProperties searchProperties;
+
+    @MockitoBean
+    private SearchRateLimiter searchRateLimiter;
+
+    @MockitoBean
+    private ClientIdentityResolver clientIdentityResolver;
+
+    @MockitoBean
+    private AdminTokenValidator adminTokenValidator;
+
+    @MockitoBean
+    private SearchRequestCostEvaluator searchRequestCostEvaluator;
+
+    @MockitoBean
+    private MeterRegistry meterRegistry;
+
+    @BeforeEach
+    void setUp() {
+        SearchProperties.RateLimit rateLimitProps = new SearchProperties.RateLimit();
+        rateLimitProps.setEnabled(false);
+        given(searchProperties.getRateLimit()).willReturn(rateLimitProps);
+        given(searchProperties.getMaxResults()).willReturn(10);
+    }
 
     @Test
     void search_validQueryDefaultParams_returns200AndJsonStructureWithHighlights() throws Exception {

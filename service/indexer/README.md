@@ -1,6 +1,6 @@
 # Indexer Service
 
-The **Indexer Service** is Service 3 in the Search Engine pipeline. Its primary role is to consume processed document content from Kafka (`search-document-topic`), index the documents into Elasticsearch using explicit mappings, and expose REST Search APIs for querying indexed content with field-weighted relevance scoring, phrase matching, advanced query syntax & operators, production-hardened resilience, response optimization, in-memory caching, search analytics & query tracking, spell correction & synonym-aware search, search quality relevance testing, search analytics & query insights, fuzzy typo tolerance, search result highlighting, search suggestions / autocomplete, advanced search filters, pagination, and sorting support.
+The **Indexer Service** is Service 3 in the Search Engine pipeline. Its primary role is to consume processed document content from Kafka (`search-document-topic`), index the documents into Elasticsearch using explicit mappings, and expose REST Search APIs for querying indexed content with field-weighted relevance scoring, phrase matching, advanced query syntax & operators, production-hardened resilience, response optimization, in-memory L1 Caffeine & L2 Redis distributed caching, Redis Pub/Sub cache invalidation coordination, distributed Redis rate limiting, search analytics & query tracking, spell correction & synonym-aware search, search quality relevance testing, search analytics & query insights, search API security & rate limiting, fuzzy typo tolerance, search result highlighting, search suggestions / autocomplete, advanced search filters, pagination, and sorting support.
 
 ---
 
@@ -23,16 +23,17 @@ SearchDocumentConsumer
     ↓
 IndexerService
     ↓
-SearchDocumentIndexer (Invalidates Search Cache on Indexing Success)
-    ↓
-Elasticsearch (search-documents)
-    ├── SearchService (Source Filtering + Caffeine Cache + SearchAnalyticsService + Spell Correction) → GET /api/search?q={query}&language={lang}&contentType={type}&statusCode={status}&fromDate={from}&toDate={to}&page={page}&size={size}&sort={sort}
-    ├── SearchSuggestionService                                                                        → GET /api/search/suggest?q={prefix}
-    ├── SearchEvaluationController                                                                     → POST /api/search/evaluation/run
-    └── SearchAnalyticsController                                                                      → GET /api/search/analytics/summary
-                                                                                                         GET /api/search/analytics/top-queries
-                                                                                                         GET /api/search/analytics/zero-results
-                                                                                                         POST /api/search/analytics/reset
+SearchDocumentIndexer ──(Clear L1 & L2 Cache + Publish Redis Pub/Sub Event)──> Redis Pub/Sub (search-engine:cache-invalidation)
+    ↓                                                                                       │
+Elasticsearch (search-documents)                                                           ▼
+    ├── RequestCorrelationFilter & SearchSecurityFilter (X-Request-Id, Distributed Redis Rate Limiting, Admin Token Auth, Query Cost Score)
+    ├── SearchService (Source Filtering + L1 Caffeine / L2 Redis Cache + SearchAnalyticsService + Spell Correction) → GET /api/search?q={query}&language={lang}&contentType={type}&statusCode={status}&fromDate={from}&toDate={to}&page={page}&size={size}&sort={sort}
+    ├── SearchSuggestionService                                                                                        → GET /api/search/suggest?q={prefix}
+    ├── SearchEvaluationController                                                                                     → POST /api/search/evaluation/run (X-Admin-Token)
+    └── SearchAnalyticsController                                                                                      → GET /api/search/analytics/summary
+                                                                                                                         GET /api/search/analytics/top-queries
+                                                                                                                         GET /api/search/analytics/zero-results
+                                                                                                                         POST /api/search/analytics/reset (X-Admin-Token)
 ```
 
 ---
@@ -43,7 +44,7 @@ Elasticsearch (search-documents)
 - Spring Boot 3.5.0 application foundation running on Java 21 on port `8083`.
 - Official Elasticsearch Java API Client configuration (`co.elastic.clients:elasticsearch-java`).
 - Externalized configuration via `application.yml` supporting environment variable overrides.
-- Actuator health check integration (`/actuator/health`) with Elasticsearch connectivity health indicator (`ElasticsearchHealthIndicator`).
+- Actuator health check integration (`/actuator/health`) with Elasticsearch health indicator (`ElasticsearchHealthIndicator`).
 - Prometheus metrics foundation (`/actuator/prometheus`).
 
 ### Feature 2 — Kafka Consumer Foundation
@@ -75,87 +76,71 @@ Elasticsearch (search-documents)
 
 ### Feature 6 — Search Relevance Improvements
 - Replaces equal-weight multi-match query with a field-weighted strategy:
-  - **`title^4.0`**: Highest importance (matches in title strongly boost document rank).
-  - **`headings^3.0`**: High importance (matches in headings rank second).
-  - **`metaDescription^2.0`**: Medium importance (matches in meta description rank third).
-  - **`bodyText^1.0`**: Baseline importance (matches in body text).
-- Configures `type = best_fields` (uses the score of the single best field for each document hit).
-- Configures `minimum_should_match = "1"` to filter out documents with zero relevant field matches.
-- Extracted query builder into `ElasticsearchSearchQueryBuilder`.
-- Centralized relevance weights under `indexer.search.relevance.*` with fast-fail startup validation (`titleBoost > 0`, etc.).
-- Normalizes search queries by trimming leading and trailing whitespace before execution while preserving internal spacing.
+  - **`title^4.0`**: Highest importance.
+  - **`headings^3.0`**: High importance.
+  - **`metaDescription^2.0`**: Medium importance.
+  - **`bodyText^1.0`**: Baseline importance.
+- Configures `type = best_fields` and `minimum_should_match = "1"`.
+- Trims whitespace from user queries before execution while preserving internal term spacing.
 
 ### Feature 7 — Fuzzy Search / Typo Tolerance
-- Extends the multi-match query with configurable Elasticsearch `fuzziness` (default `AUTO`).
+- Extends multi-match query with configurable Elasticsearch `fuzziness` (default `AUTO`).
 - Allows minor typos in user queries (e.g. `"sprng boot"` matches `"Spring Boot"`).
-- Externalized configuration under `indexer.search.fuzzy.*`:
-  - `enabled`: `true` (default).
-  - `fuzziness`: `AUTO` (default).
-- Fully compatible with Feature 6 field weighting (`title^4.0`, `headings^3.0`, `metaDescription^2.0`, `bodyText^1.0`) and sorting options.
 
 ### Feature 8 — Search Result Highlighting
-- Adds Elasticsearch highlighting configuration to search requests for searchable fields (`title`, `headings`, `metaDescription`, `bodyText`).
+- Adds Elasticsearch highlighting configuration to search requests for searchable fields.
 - Encloses matched terms in configurable HTML tags (default `<em>` and `</em>`).
-- Limits returned body text fragments to `fragment-size: 150` characters and `number-of-fragments: 2` to control payload size.
-- Maps highlight fragments directly into `SearchResult.highlights` as `Map<String, List<String>>`.
-- Returns `"highlights": {}` when no fragments are returned or when highlighting is disabled.
-- Presentation metadata only: Highlighting does NOT alter Elasticsearch BM25 relevance scoring or result ordering.
+- Maps highlight fragments directly into `SearchResult.highlights`.
 
 ### Feature 9 — Search Suggestions / Autocomplete
 - Exposes `GET /api/search/suggest?q={prefix}` endpoint.
-- Returns clean `SearchSuggestionResponse` DTO containing `query` and `suggestions` list (`List<String>`).
-- Prefix queries search `title.suggest` and `headings.suggest` using Elasticsearch prefix queries.
-- Bounded safety: Prefix length must be $\ge 2$ characters; results bounded to maximum 8 suggestions.
+- Returns `SearchSuggestionResponse` DTO containing `query` and `suggestions` list (`List<String>`).
 
 ### Feature 10 — Advanced Search Filtering
 - Adds search filters: `language`, `contentType`, `statusCode`, `fromDate`, `toDate`.
 - Evaluates filters inside `bool.filter` non-scoring context.
-- Fast-fail parameter validations on blank parameters, invalid status codes (100–599), or inverted date ranges (`fromDate > toDate`).
 
 ### Feature 11 — Phrase Matching & Advanced Relevance Weighting
 - Introduces phrase matching boost (`phraseBoost = 2.0`) and title phrase boost (`titlePhraseBoost = 4.0`).
-- Multi-term queries evaluate phrase matches alongside token multi-match queries to boost documents with consecutive term occurrences.
 
 ### Feature 12 — Advanced Search Query Syntax & Operators
-- Adds controlled, safe query parsing via `SearchQueryParser`:
-  - **Normal term**: `spring boot`
-  - **Exact phrase**: `"spring boot"`
-  - **Required term**: `+spring`
-  - **Excluded term**: `-xml`
-- Strict safety limits: Maximum 20 query terms, maximum 10 query phrases per request.
+- Adds safe query parsing via `SearchQueryParser`: exact phrase (`"..."`), required (`+term`), excluded (`-term`).
 
 ### Feature 13 — Search Production Hardening & Resilience
-- Circuit breaker / query timeout controls (`indexer.search.timeout = 3s`).
-- Deep pagination safety bounds (`indexer.search.max-page-depth = 10000`).
-- Exception handling returning HTTP 400 Bad Request for validation errors and HTTP 500 for backend failures.
+- Circuit breaker / query timeout controls (`indexer.search.timeout = 3s`) and deep pagination bounds (`10000`).
 
 ### Feature 14 — Search Performance, Caching & Response Optimization
-- In-memory Caffeine caching (`SearchCacheService`) for identical search parameter requests.
-- Cache invalidation on new document indexing (`SearchDocumentIndexer`).
-- Source filtering (`_source.includes`) returning only required display fields.
+- In-memory Caffeine caching (`SearchCacheService`) for search queries.
 
 ### Feature 15 — Search Analytics & Query Tracking
 - Thread-safe query statistics tracking (`SearchAnalyticsService`).
-- Aggregates request count, successful/failed count, zero-result queries, and average latency.
 
 ### Feature 16 — Search Spell Correction & Synonym-Aware Search
-- Query-time synonym expansion (`SearchQueryEnhancer`) for positive terms.
-- Zero-result fallback spell correction (`SearchSpellCorrectionService`) using Elasticsearch Term Suggester API.
+- Query-time synonym expansion (`SearchQueryEnhancer`) and zero-result fallback spell correction (`SearchSpellCorrectionService`).
 
 ### Feature 17 — Search Quality, Ranking Evaluation & Relevance Testing
-- Repeatable relevance quality measurement framework (`SearchEvaluationService`).
-- Calculates Precision@K, Recall@K, Mean Reciprocal Rank (MRR), Hit@K, Zero-Result Rate, and Average Result Count.
-- Exposes `POST /api/search/evaluation/run` internal endpoint.
+- Repeatable relevance evaluation framework (`SearchEvaluationService`) exposing `POST /api/search/evaluation/run`.
 
 ### Feature 18 — Search Analytics & Query Insights
-- Observability-only search analytics layer (`SearchAnalyticsService`) tracking search metrics, cache hit rates, zero-result rates, synonym expansions, spell corrections, filter usage, and advanced syntax usage.
-- Strict Privacy & Security: Computes SHA-256 hashes (`queryHash`) for query aggregation. Query text storage is configurable (`normalized-query-storage: false` by default). Low-cardinality Micrometer metrics with no PII tags.
-- Bounded Caffeine Storage: Queries bounded by `maximum-query-entries` (5,000) and `retention` (24h TTL).
-- Failure Isolation: Analytics failure is caught and logged as `SEARCH_ANALYTICS_RECORDING_FAILED` without affecting search execution or response.
-- REST Endpoints:
-  - `GET /api/search/analytics/summary`
-  - `GET /api/search/analytics/top-queries`
-  - `GET /api/search/analytics/zero-results`
+- Observability-only search analytics layer (`SearchAnalyticsService`) with SHA-256 hashed queries and PII protection.
+
+### Feature 19 — Search API Security, Rate Limiting & Abuse Protection
+- Endpoint-specific rate limits, `X-Request-Id` correlation, admin token security (`X-Admin-Token`), query cost protection (`SearchRequestCostEvaluator`), and security headers.
+
+### Feature 20 — Distributed Redis Rate Limiting & Search Cache Coordination
+- **Distributed Redis Rate Limiting** (`RedisSearchRateLimiter`): Atomic Redis counter operations (`INCR` + `EXPIRE`) sharing endpoint limits across multiple Indexer instances. SHA-256 client key hashing.
+- **Fail-Open Resilience**: If Redis is unavailable and `fail-open: true`, logs `REDIS_CONNECTION_FAILED`, increments fallback metrics (`search.rate_limit.redis.fallback`), and seamlessly falls back to local Caffeine rate limiting. If `fail-open: false`, returns `HTTP 503 Service Unavailable`.
+- **L1 Caffeine / L2 Redis Search Cache Architecture** (`SearchCacheService` & `RedisSearchCache`):
+  - **L1 Cache**: Local Caffeine in-memory cache (ultra-fast).
+  - **L2 Cache**: Redis distributed cache (`search-engine:search:<hash>`) using Jackson JSON serialization and SHA-256 `SearchCacheKey` hashes.
+  - **Read Flow**: Request $\rightarrow$ L1 Caffeine hit (return) $\rightarrow$ L1 Caffeine miss $\rightarrow$ L2 Redis hit (return & populate L1) $\rightarrow$ L2 Redis miss $\rightarrow$ Elasticsearch execution $\rightarrow$ store in L2 Redis & L1 Caffeine.
+- **Redis Pub/Sub Cache Invalidation Coordination** (`SearchCacheInvalidationPublisher` & `SearchCacheInvalidationSubscriber`):
+  - Successful Elasticsearch indexing clears local L1 Caffeine cache, clears L2 Redis cache keys (`search-engine:search:*`), and publishes a Pub/Sub invalidation message to channel `search-engine:cache-invalidation`.
+  - All Indexer instances listening on the channel invalidate their local L1 Caffeine cache instantly.
+  - Pub/Sub or Redis failure clears local L1 cache and never breaks Elasticsearch document indexing.
+- **Redis Health Indicator** (`RedisHealthIndicator`): Exposes Redis connection state on `/actuator/health`. When `fail-open: true`, Redis downtime reports `DEGRADED` detail without bringing down application health.
+
+*Scope Clarification*: Feature 20 does NOT introduce Redis Streams, distributed locks, API Gateway, OAuth/JWT, user authentication, Kubernetes deployment, service mesh, or Feature 21 functionality.
 
 ---
 
@@ -164,77 +149,37 @@ Elasticsearch (search-documents)
 ```yaml
 indexer:
   search:
-    max-results: 10
-    max-page-size: 50
-    max-query-length: 200
-    timeout: 3s
-    max-page-depth: 10000
-    max-query-terms: 20
-    max-query-phrases: 10
-    slow-query-threshold-ms: 1000
+    redis:
+      enabled: ${SEARCH_REDIS_ENABLED:true}
+      host: ${SEARCH_REDIS_HOST:localhost}
+      port: ${SEARCH_REDIS_PORT:6379}
+      password: ${SEARCH_REDIS_PASSWORD:}
+      timeout: ${SEARCH_REDIS_TIMEOUT:500ms}
+      key-prefix: ${SEARCH_REDIS_KEY_PREFIX:search-engine:}
+      fail-open: ${SEARCH_REDIS_FAIL_OPEN:true}
+    rate-limit:
+      enabled: ${SEARCH_RATE_LIMIT_ENABLED:true}
+      trust-forwarded-headers: false
+      maximum-client-entries: 10000
+      window: 1m
+      max-cost-score: 100
+      search:
+        requests-per-minute: 60
+      suggest:
+        requests-per-minute: 120
+      analytics:
+        requests-per-minute: 10
+      evaluation:
+        requests-per-minute: 2
+      analytics-reset:
+        requests-per-minute: 1
     cache:
       enabled: true
       maximum-size: 1000
       ttl: 60s
-    analytics:
+    admin:
       enabled: true
-      maximum-query-entries: 5000
-      retention: 24h
-      top-query-limit: 20
-      normalized-query-storage: false
-    synonyms:
-      enabled: true
-      maximum-synonyms-per-term: 5
-      rules:
-        - "java, jdk"
-        - "js, javascript"
-        - "spring boot, springboot"
-    spell-correction:
-      enabled: true
-      maximum-suggestions: 3
-      minimum-term-length: 3
-    evaluation:
-      enabled: true
-      minimum-mrr: 0.80
-      minimum-hit-at-1: 0.70
-      minimum-hit-at-3: 0.90
-      minimum-recall-at-10: 0.95
-      maximum-zero-result-rate: 0.10
-```
-
----
-
-## API Documentation
-
-### 1. Search Endpoint
-```http
-GET /api/search?q=spring%20boot&language=en&page=0&size=10&sort=relevance
-```
-
-### 2. Search Analytics Summary Endpoint
-```http
-GET /api/search/analytics/summary
-```
-
-### 3. Top Queries Endpoint
-```http
-GET /api/search/analytics/top-queries
-```
-
-### 4. Zero-Result Queries Endpoint
-```http
-GET /api/search/analytics/zero-results
-```
-
-### 5. Reset Analytics Endpoint
-```http
-POST /api/search/analytics/reset
-```
-*Response*: `HTTP 204 No Content`.
-
-### 6. Relevance Evaluation Endpoint
-```http
-POST /api/search/evaluation/run
+      token: test-admin-secret-token
 ```
 
 ---
@@ -256,7 +201,7 @@ cd service/indexer
 .\mvnw.cmd clean test
 ```
 
-Run real Elasticsearch integration tests:
+Run Elasticsearch & Redis integration tests:
 ```powershell
 cd service/indexer
 .\mvnw.cmd test -Pelasticsearch-integration
