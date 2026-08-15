@@ -3,9 +3,11 @@ package com.searchengine.indexer.service;
 import com.searchengine.indexer.config.IndexerElasticsearchProperties;
 import com.searchengine.indexer.config.SearchProperties;
 import com.searchengine.indexer.exception.SearchQueryException;
+import com.searchengine.indexer.exception.SearchQuerySyntaxException;
 import com.searchengine.indexer.model.dto.SearchResponse;
 import com.searchengine.indexer.model.dto.SearchResult;
 import com.searchengine.indexer.search.ElasticsearchSearchQueryBuilder;
+import com.searchengine.indexer.search.SearchQueryParser;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import co.elastic.clients.elasticsearch.core.search.HitsMetadata;
@@ -36,6 +38,7 @@ class SearchServiceTest {
     private IndexerElasticsearchProperties indexerProperties;
     private SearchProperties searchProperties;
     private ElasticsearchSearchQueryBuilder searchQueryBuilder;
+    private SearchQueryParser searchQueryParser;
     private SearchService searchService;
 
     @BeforeEach
@@ -49,7 +52,8 @@ class SearchServiceTest {
         searchProperties.setMaxQueryLength(200);
 
         searchQueryBuilder = new ElasticsearchSearchQueryBuilder(searchProperties);
-        searchService = new SearchService(elasticsearchClient, indexerProperties, searchProperties, searchQueryBuilder);
+        searchQueryParser = new SearchQueryParser();
+        searchService = new SearchService(elasticsearchClient, indexerProperties, searchProperties, searchQueryBuilder, searchQueryParser);
     }
 
     private co.elastic.clients.elasticsearch.core.SearchResponse<Map> createMockEsResponse(long hitsCount, Map<String, List<String>> highlights) {
@@ -93,6 +97,24 @@ class SearchServiceTest {
 
         assertThat(response.query()).isEqualTo("spring");
         assertThat(response.totalHits()).isEqualTo(1L);
+    }
+
+    @Test
+    void search_advancedSyntax_executesSuccessfully() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+
+        SearchResponse response = searchService.search("\"spring boot\" +java -xml", null, null, null, null, null, 0, 10, "relevance");
+
+        assertThat(response.query()).isEqualTo("\"spring boot\" +java -xml");
+        assertThat(response.totalHits()).isEqualTo(1L);
+    }
+
+    @Test
+    void search_invalidSyntax_throwsSearchQuerySyntaxException() {
+        assertThatThrownBy(() -> searchService.search("\"unclosed quote", null, null, null, null, null, 0, 10, "relevance"))
+                .isInstanceOf(SearchQuerySyntaxException.class)
+                .hasMessageContaining("Invalid search query syntax");
     }
 
     @Test

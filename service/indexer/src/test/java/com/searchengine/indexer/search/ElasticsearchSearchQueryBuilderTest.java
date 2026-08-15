@@ -2,6 +2,7 @@ package com.searchengine.indexer.search;
 
 import com.searchengine.indexer.config.SearchProperties;
 import com.searchengine.indexer.model.dto.SearchFilter;
+import com.searchengine.indexer.model.search.ParsedSearchQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.MultiMatchQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
@@ -11,6 +12,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -18,11 +20,13 @@ class ElasticsearchSearchQueryBuilderTest {
 
     private SearchProperties searchProperties;
     private ElasticsearchSearchQueryBuilder queryBuilder;
+    private SearchQueryParser searchQueryParser;
 
     @BeforeEach
     void setUp() {
         searchProperties = new SearchProperties();
         queryBuilder = new ElasticsearchSearchQueryBuilder(searchProperties);
+        searchQueryParser = new SearchQueryParser();
     }
 
     @Test
@@ -116,6 +120,27 @@ class ElasticsearchSearchQueryBuilderTest {
 
         assertThat(query.isBool()).isTrue();
         assertThat(query.bool().should()).hasSize(3);
+    }
+
+    @Test
+    void buildSearchQuery_advancedQueryWithRequiredAndExcludedTerms_buildsBoolWithMustAndMustNot() {
+        ParsedSearchQuery parsed = searchQueryParser.parse("spring +java -xml");
+        SearchFilter filter = new SearchFilter(null, null, null, null, null);
+
+        Query query = queryBuilder.buildSearchQuery(parsed, filter);
+
+        assertThat(query.isBool()).isTrue();
+        BoolQuery bool = query.bool();
+
+        // Must contains positive relevance query AND required term 'java'
+        assertThat(bool.must()).hasSize(2);
+        assertThat(bool.must().get(1).isMultiMatch()).isTrue();
+        assertThat(bool.must().get(1).multiMatch().query()).isEqualTo("java");
+
+        // MustNot contains excluded term 'xml'
+        assertThat(bool.mustNot()).hasSize(1);
+        assertThat(bool.mustNot().get(0).isMultiMatch()).isTrue();
+        assertThat(bool.mustNot().get(0).multiMatch().query()).isEqualTo("xml");
     }
 
     @Test

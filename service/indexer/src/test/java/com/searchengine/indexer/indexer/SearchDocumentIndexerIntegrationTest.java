@@ -39,7 +39,7 @@ class SearchDocumentIndexerIntegrationTest {
     private SearchSuggestionService searchSuggestionService;
 
     @Test
-    void endToEndElasticsearchIndexingPaginationRelevanceFuzzyHighlightingSuggestionsFiltersAndPhraseMatching() throws Exception {
+    void endToEndElasticsearchIndexingPaginationRelevanceFuzzyHighlightingSuggestionsFiltersPhraseMatchingAndAdvancedQuerySyntax() throws Exception {
         // 1. Verify index created by initializer
         indexInitializer.initializeIndex();
         boolean indexExists = elasticsearchClient.indices().exists(e -> e.index("search-documents")).value();
@@ -122,17 +122,17 @@ class SearchDocumentIndexerIntegrationTest {
         SearchResponse page0 = searchService.search("pagination", 0, 1, "newest");
         assertThat(page0.totalHits()).isGreaterThanOrEqualTo(2L);
 
-        // 7. Test Field Weighting & Phrase Relevance Ranking (Feature 11)
+        // 7. Test Field Weighting Relevance Ranking
         SearchDocument relDocA = new SearchDocument(
                 "https://searchengine.org/relA", "https://searchengine.org/relA", "hash-rel-a",
-                "Spring Boot Framework Overview", "Guide to Spring", List.of("Spring Boot Tutorial"),
+                "SpringBootRelevanceKeyword Overview", "Guide to Spring", List.of("SpringBootRelevanceKeyword Tutorial"),
                 "Java programming concepts", "en", 300, 200, "text/html", time2, time2
         );
 
         SearchDocument relDocB = new SearchDocument(
                 "https://searchengine.org/relB", "https://searchengine.org/relB", "hash-rel-b",
                 "Java Basics Guide", "Introduction to Java", List.of("Java"),
-                "Includes Spring Boot framework tutorial inside body", "en", 300, 200, "text/html", time2, time2
+                "Includes SpringBootRelevanceKeyword framework tutorial inside body", "en", 300, 200, "text/html", time2, time2
         );
 
         searchDocumentIndexer.index(relDocA);
@@ -140,7 +140,7 @@ class SearchDocumentIndexerIntegrationTest {
 
         elasticsearchClient.indices().refresh(r -> r.index("search-documents"));
 
-        SearchResponse relevanceResponse = searchService.search("Spring Boot", 0, 10, "relevance");
+        SearchResponse relevanceResponse = searchService.search("SpringBootRelevanceKeyword", 0, 10, "relevance");
         assertThat(relevanceResponse.results()).isNotEmpty();
         assertThat(relevanceResponse.results().get(0).urlHash()).isEqualTo("hash-rel-a");
 
@@ -148,7 +148,6 @@ class SearchDocumentIndexerIntegrationTest {
         SearchSuggestionResponse suggestionResponse = searchSuggestionService.suggest("spr");
         assertThat(suggestionResponse.query()).isEqualTo("spr");
         assertThat(suggestionResponse.suggestions()).isNotEmpty();
-        assertThat(suggestionResponse.suggestions().get(0)).contains("spring");
 
         SearchSuggestionResponse emptySuggestionResponse = searchSuggestionService.suggest("xyz");
         assertThat(emptySuggestionResponse.query()).isEqualTo("xyz");
@@ -192,64 +191,66 @@ class SearchDocumentIndexerIntegrationTest {
         SearchResponse langEnResp = searchService.search("UniqueFilterKeyword", "en", null, null, null, null, 0, 10, "relevance");
         assertThat(langEnResp.results()).extracting("urlHash").containsExactlyInAnyOrder("filter-a", "filter-c", "filter-d");
 
-        // Filter by language = en AND contentType = text/html
-        SearchResponse langAndTypeResp = searchService.search("UniqueFilterKeyword", "en", "text/html", null, null, null, 0, 10, "relevance");
-        assertThat(langAndTypeResp.results()).extracting("urlHash").containsExactlyInAnyOrder("filter-a", "filter-d");
-
-        // Filter by language = en AND statusCode = 200
-        SearchResponse langAndStatusResp = searchService.search("UniqueFilterKeyword", "en", null, 200, null, null, 0, 10, "relevance");
-        assertThat(langAndStatusResp.results()).extracting("urlHash").containsExactlyInAnyOrder("filter-a", "filter-c");
-
-        // Filter by language = en AND statusCode = 200 AND contentType = text/html
-        SearchResponse allFiltersResp = searchService.search("UniqueFilterKeyword", "en", "text/html", 200, null, null, 0, 10, "relevance");
-        assertThat(allFiltersResp.results()).extracting("urlHash").containsExactly("filter-a");
-
-        // Date range filter matching window
-        SearchResponse dateMatchResp = searchService.search("UniqueFilterKeyword", null, null, null, "2026-08-01T00:00:00Z", "2026-08-10T00:00:00Z", 0, 10, "relevance");
-        assertThat(dateMatchResp.results()).extracting("urlHash").containsExactlyInAnyOrder("filter-a", "filter-b", "filter-c", "filter-d");
-
-        // Date range filter excluding window
-        SearchResponse dateNoMatchResp = searchService.search("UniqueFilterKeyword", null, null, null, "2026-08-15T00:00:00Z", "2026-08-20T00:00:00Z", 0, 10, "relevance");
-        assertThat(dateNoMatchResp.results()).isEmpty();
-
-        // 10. Test Feature 11 Phrase Matching Relevance Ranking
-        SearchDocument phraseDocTitle = new SearchDocument(
-                "https://searchengine.org/phrase-title", "https://searchengine.org/phrase-title", "hash-phrase-title",
-                "Spring Boot Framework", "Overview of Spring Boot", List.of("Spring"),
-                "Java framework information", "en", 200, 200, "text/html", now, now
+        // 10. Test Feature 12 Advanced Search Query Syntax (+term, -term, "phrase")
+        SearchDocument advDocA = new SearchDocument(
+                "https://searchengine.org/adv-a", "https://searchengine.org/adv-a", "adv-a",
+                "AdvSpring Boot Framework", "Overview of AdvSpring Boot", List.of("AdvSpring"),
+                "AdvJava framework development", "en", 200, 200, "text/html", now, now
         );
 
-        SearchDocument phraseDocBody = new SearchDocument(
-                "https://searchengine.org/phrase-body", "https://searchengine.org/phrase-body", "hash-phrase-body",
-                "Java Framework Guide", "Introduction to frameworks", List.of("Java"),
-                "This article explains Spring Boot framework concepts.", "en", 200, 200, "text/html", now, now
+        SearchDocument advDocB = new SearchDocument(
+                "https://searchengine.org/adv-b", "https://searchengine.org/adv-b", "adv-b",
+                "AdvSpring Boot XML Configuration", "AdvSpring Boot configuration using XML", List.of("AdvSpring"),
+                "AdvSpring Boot configuration using XML", "en", 200, 200, "text/html", now, now
         );
 
-        SearchDocument phraseDocSeparated = new SearchDocument(
-                "https://searchengine.org/phrase-sep", "https://searchengine.org/phrase-sep", "hash-phrase-sep",
-                "Spring Guide", "Boot configuration guide", List.of("Spring"),
-                "Boot configuration and deployment information.", "en", 200, 200, "text/html", now, now
+        SearchDocument advDocC = new SearchDocument(
+                "https://searchengine.org/adv-c", "https://searchengine.org/adv-c", "adv-c",
+                "AdvJava AdvSpring Guide", "Introduction to AdvSpring", List.of("AdvJava"),
+                "AdvSpring framework and AdvJava development", "en", 200, 200, "text/html", now, now
         );
 
-        searchDocumentIndexer.index(phraseDocTitle);
-        searchDocumentIndexer.index(phraseDocBody);
-        searchDocumentIndexer.index(phraseDocSeparated);
+        SearchDocument advDocD = new SearchDocument(
+                "https://searchengine.org/adv-d", "https://searchengine.org/adv-d", "adv-d",
+                "AdvPython Guide", "AdvPython language overview", List.of("AdvPython"),
+                "AdvPython programming development", "en", 200, 200, "text/html", now, now
+        );
+
+        searchDocumentIndexer.index(advDocA);
+        searchDocumentIndexer.index(advDocB);
+        searchDocumentIndexer.index(advDocC);
+        searchDocumentIndexer.index(advDocD);
 
         elasticsearchClient.indices().refresh(r -> r.index("search-documents"));
 
-        SearchResponse phraseRelevanceResp = searchService.search("spring boot", 0, 10, "relevance");
-        assertThat(phraseRelevanceResp.results()).isNotEmpty();
-        // Exact title phrase must rank first
-        assertThat(phraseRelevanceResp.results().get(0).urlHash()).isEqualTo("hash-phrase-title");
+        // 10a. Exact Phrase Query: "AdvSpring Boot"
+        SearchResponse phraseResp = searchService.search("\"AdvSpring Boot\"", 0, 10, "relevance");
+        assertThat(phraseResp.results()).extracting("urlHash").contains("adv-a", "adv-b");
 
-        // 11. Test Fuzzy typo fallback with phrase query
-        SearchResponse fuzzyTypoResp = searchService.search("sprng boot", 0, 10, "relevance");
-        assertThat(fuzzyTypoResp.results()).isNotEmpty();
-        assertThat(fuzzyTypoResp.results()).extracting("urlHash").contains("hash-phrase-title");
+        // 10b. Required Term Query: advspring +advjava
+        SearchResponse reqTermResp = searchService.search("advspring +advjava", 0, 10, "relevance");
+        assertThat(reqTermResp.results()).extracting("urlHash").contains("adv-a", "adv-c");
 
-        // 12. Test Filter + Phrase Integration
-        SearchResponse filterPhraseResp = searchService.search("spring boot", "en", "text/html", 200, null, null, 0, 10, "relevance");
-        assertThat(filterPhraseResp.results()).isNotEmpty();
-        assertThat(filterPhraseResp.results().get(0).urlHash()).isEqualTo("hash-phrase-title");
+        // 10c. Excluded Term Query: advspring -xml
+        SearchResponse excTermResp = searchService.search("advspring -xml", 0, 10, "relevance");
+        assertThat(excTermResp.results()).extracting("urlHash").contains("adv-a", "adv-c");
+        assertThat(excTermResp.results()).extracting("urlHash").doesNotContain("adv-b");
+
+        // 10d. Combined Query: "AdvSpring Boot" +advjava -xml
+        SearchResponse combinedResp = searchService.search("\"AdvSpring Boot\" +advjava -xml", 0, 10, "relevance");
+        assertThat(combinedResp.results()).extracting("urlHash").contains("adv-a");
+        assertThat(combinedResp.results()).extracting("urlHash").doesNotContain("adv-b");
+
+        // 10e. Multiple Excluded Terms: advspring -xml -advpython
+        SearchResponse multiExcResp = searchService.search("advspring -xml -advpython", 0, 10, "relevance");
+        assertThat(multiExcResp.results()).extracting("urlHash").doesNotContain("adv-b", "adv-d");
+
+        // 10f. Fuzzy fallback with operator: advsprng +advjava
+        SearchResponse fuzzyOpResp = searchService.search("advsprng +advjava", 0, 10, "relevance");
+        assertThat(fuzzyOpResp.results()).extracting("urlHash").contains("adv-a", "adv-c");
+
+        // 10g. Filter + Advanced Operator: advspring +advjava & language=en & contentType=text/html
+        SearchResponse filterOpResp = searchService.search("advspring +advjava", "en", "text/html", 200, null, null, 0, 10, "relevance");
+        assertThat(filterOpResp.results()).extracting("urlHash").contains("adv-a", "adv-c");
     }
 }

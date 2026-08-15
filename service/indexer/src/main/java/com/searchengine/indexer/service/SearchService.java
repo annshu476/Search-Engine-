@@ -6,7 +6,9 @@ import com.searchengine.indexer.exception.SearchQueryException;
 import com.searchengine.indexer.model.dto.SearchFilter;
 import com.searchengine.indexer.model.dto.SearchResponse;
 import com.searchengine.indexer.model.dto.SearchResult;
+import com.searchengine.indexer.model.search.ParsedSearchQuery;
 import com.searchengine.indexer.search.ElasticsearchSearchQueryBuilder;
+import com.searchengine.indexer.search.SearchQueryParser;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
@@ -32,6 +34,7 @@ public class SearchService {
     private final IndexerElasticsearchProperties indexerElasticsearchProperties;
     private final SearchProperties searchProperties;
     private final ElasticsearchSearchQueryBuilder searchQueryBuilder;
+    private final SearchQueryParser searchQueryParser;
 
     public SearchResponse search(String query) {
         return search(query, 0, searchProperties.getMaxResults(), "relevance");
@@ -50,6 +53,8 @@ public class SearchService {
         if (trimmedQuery.length() > searchProperties.getMaxQueryLength()) {
             throw new IllegalArgumentException("Search query exceeds maximum allowed length");
         }
+
+        ParsedSearchQuery parsedQuery = searchQueryParser.parse(trimmedQuery);
 
         String validatedLanguage = validateLanguage(language);
         String validatedContentType = validateContentType(contentType);
@@ -82,7 +87,7 @@ public class SearchService {
 
         SearchFilter filter = new SearchFilter(validatedLanguage, validatedContentType, validatedStatusCode, parsedFromDate, parsedToDate);
         String indexName = indexerElasticsearchProperties.getIndexName();
-        Query esQuery = searchQueryBuilder.buildSearchQuery(trimmedQuery, filter);
+        Query esQuery = searchQueryBuilder.buildSearchQuery(parsedQuery, filter);
         Highlight highlightConfig = searchQueryBuilder.buildHighlight();
 
         try {
@@ -139,13 +144,13 @@ public class SearchService {
             }
 
             log.info("SEARCH_QUERY_EXECUTED query={} language={} contentType={} statusCode={} fromDate={} toDate={} page={} size={} sort={} fuzzyEnabled={} highlightEnabled={} totalHits={} totalPages={} returnedResults={}",
-                    trimmedQuery, validatedLanguage, validatedContentType, validatedStatusCode, parsedFromDate, parsedToDate, page, size, normalizedSort, searchProperties.getFuzzy().isEnabled(), searchProperties.getHighlight().isEnabled(), totalHits, totalPages, results.size());
+                    query, validatedLanguage, validatedContentType, validatedStatusCode, parsedFromDate, parsedToDate, page, size, normalizedSort, searchProperties.getFuzzy().isEnabled(), searchProperties.getHighlight().isEnabled(), totalHits, totalPages, results.size());
 
-            return new SearchResponse(trimmedQuery, totalHits, page, size, totalPages, normalizedSort, results);
+            return new SearchResponse(query, totalHits, page, size, totalPages, normalizedSort, results);
 
         } catch (Exception e) {
-            log.error("SEARCH_QUERY_FAILED query={} index={} error={}", trimmedQuery, indexName, e.getMessage(), e);
-            throw new SearchQueryException("Elasticsearch search query failed for: " + trimmedQuery, e);
+            log.error("SEARCH_QUERY_FAILED query={} index={} error={}", query, indexName, e.getMessage(), e);
+            throw new SearchQueryException("Elasticsearch search query failed for: " + query, e);
         }
     }
 

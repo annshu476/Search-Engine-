@@ -1,6 +1,7 @@
 package com.searchengine.indexer.controller;
 
 import com.searchengine.indexer.exception.SearchQueryException;
+import com.searchengine.indexer.exception.SearchQuerySyntaxException;
 import com.searchengine.indexer.exception.SearchSuggestionException;
 import com.searchengine.indexer.health.ElasticsearchHealthIndicator;
 import com.searchengine.indexer.initializer.SearchDocumentIndexInitializer;
@@ -75,6 +76,26 @@ class SearchControllerTest {
                 .andExpect(jsonPath("$.results[0].wordCount").value(450))
                 .andExpect(jsonPath("$.results[0].statusCode").value(200))
                 .andExpect(jsonPath("$.results[0].highlights.title[0]").value("<em>Spring Framework</em>"));
+    }
+
+    @Test
+    void search_advancedOperators_returns200() throws Exception {
+        SearchResponse response = new SearchResponse("\"spring boot\" +java -xml", 1L, 0, 10, 1, "relevance", List.of());
+        given(searchService.search("\"spring boot\" +java -xml", null, null, null, null, null, 0, 10, "relevance")).willReturn(response);
+
+        mockMvc.perform(get("/api/search").param("q", "\"spring boot\" +java -xml"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.query").value("\"spring boot\" +java -xml"));
+    }
+
+    @Test
+    void search_malformedSyntax_returns400() throws Exception {
+        given(searchService.search("\"unclosed quote", null, null, null, null, null, 0, 10, "relevance"))
+                .willThrow(new SearchQuerySyntaxException("Invalid search query syntax"));
+
+        mockMvc.perform(get("/api/search").param("q", "\"unclosed quote"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("Invalid search query syntax"));
     }
 
     @Test

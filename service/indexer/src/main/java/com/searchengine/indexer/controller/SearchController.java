@@ -1,6 +1,7 @@
 package com.searchengine.indexer.controller;
 
 import com.searchengine.indexer.exception.SearchQueryException;
+import com.searchengine.indexer.exception.SearchQuerySyntaxException;
 import com.searchengine.indexer.exception.SearchSuggestionException;
 import com.searchengine.indexer.model.dto.SearchResponse;
 import com.searchengine.indexer.model.dto.SearchSuggestionResponse;
@@ -49,6 +50,13 @@ public class SearchController {
     ) {
         SearchSuggestionResponse response = searchSuggestionService.suggest(query);
         return ResponseEntity.ok(response);
+    }
+
+    @ExceptionHandler(SearchQuerySyntaxException.class)
+    public ResponseEntity<Map<String, String>> handleSearchQuerySyntaxException(SearchQuerySyntaxException ex) {
+        log.warn("Search request query syntax validation failed: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(Map.of("error", "Invalid search query syntax"));
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

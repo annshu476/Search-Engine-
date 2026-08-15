@@ -2,11 +2,11 @@ package com.searchengine.indexer.search;
 
 import com.searchengine.indexer.config.SearchProperties;
 import com.searchengine.indexer.model.dto.SearchFilter;
+import com.searchengine.indexer.model.search.ParsedSearchQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch._types.query_dsl.TextQueryType;
 import co.elastic.clients.elasticsearch.core.search.Highlight;
 import co.elastic.clients.elasticsearch.core.search.HighlightField;
-import co.elastic.clients.json.JsonData;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -45,6 +45,15 @@ public class ElasticsearchSearchQueryBuilder {
                     return m;
                 })
         );
+    }
+
+    public Query buildMultiMatchQueryWithoutFuzziness(String queryText) {
+        List<String> fields = List.of("title", "headings", "metaDescription", "bodyText");
+        return Query.of(q -> q.multiMatch(m -> m
+                .query(queryText)
+                .fields(fields)
+                .type(TextQueryType.BestFields)
+        ));
     }
 
     public Query buildRelevanceQuery(String queryText) {
@@ -94,46 +103,99 @@ public class ElasticsearchSearchQueryBuilder {
     }
 
     public Query buildSearchQuery(String queryText, SearchFilter filter) {
-        Query relevanceQuery = buildRelevanceQuery(queryText);
-        if (filter == null || !filter.hasFilters()) {
-            return relevanceQuery;
-        }
+        SearchQueryParser parser = new SearchQueryParser();
+        ParsedSearchQuery parsedQuery = parser.parse(queryText);
+        return buildSearchQuery(parsedQuery, filter);
+    }
 
+    public Query buildSearchQuery(ParsedSearchQuery parsedQuery, SearchFilter filter) {
+        List<Query> mustQueries = new ArrayList<>();
         List<Query> filterQueries = new ArrayList<>();
+        List<Query> mustNotQueries = new ArrayList<>();
 
-        if (filter.language() != null) {
-            filterQueries.add(Query.of(q -> q.term(t -> t.field("language").value(filter.language()))));
+        if (parsedQuery.isSimpleNormalQuery()) {
+            String queryText = !parsedQuery.normalTerms().isEmpty()
+                    ? String.join(" ", parsedQuery.normalTerms())
+                    : String.join(" ", parsedQuery.exactPhrases());
+            Query relevanceQuery = buildRelevanceQuery(queryText);
+            mustQueries.add(relevanceQuery);
+        } else {
+            List<String> positiveTerms = new ArrayList<>();
+            positiveTerms.addAll(parsedQuery.normalTerms());
+            positiveTerms.addAll(parsedQuery.exactPhrases());
+            positiveTerms.addAll(parsedQuery.requiredTerms());
+            positiveTerms.addAll(parsedQuery.requiredPhrases());
+
+            if (!positiveTerms.isEmpty()) {
+                String fullPositiveText = String.join(" ", positiveTerms);
+                mustQueries.add(buildRelevanceQuery(fullPositiveText));
+            }
+
+            for (String reqTerm : parsedQuery.requiredTerms()) {
+                mustQueries.add(buildMultiMatchQuery(reqTerm));
+            }
+
+            for (String reqPhrase : parsedQuery.requiredPhrases()) {
+                mustQueries.add(Query.of(q -> q.multiMatch(m -> m
+                        .query(reqPhrase)
+                        .fields(List.of("title", "headings", "metaDescription", "bodyText"))
+                        .type(TextQueryType.Phrase)
+                )));
+            }
+
+            for (String excTerm : parsedQuery.excludedTerms()) {
+                mustNotQueries.add(buildMultiMatchQueryWithoutFuzziness(excTerm));
+            }
+
+            for (String excPhrase : parsedQuery.excludedPhrases()) {
+                mustNotQueries.add(Query.of(q -> q.multiMatch(m -> m
+                        .query(excPhrase)
+                        .fields(List.of("title", "headings", "metaDescription", "bodyText"))
+                        .type(TextQueryType.Phrase)
+                )));
+            }
         }
 
-        if (filter.contentType() != null) {
-            filterQueries.add(Query.of(q -> q.term(t -> t.field("contentType").value(filter.contentType()))));
+        if (filter != null && filter.hasFilters()) {
+            if (filter.language() != null) {
+                filterQueries.add(Query.of(q -> q.term(t -> t.field("language").value(filter.language()))));
+            }
+            if (filter.contentType() != null) {
+                filterQueries.add(Query.of(q -> q.term(t -> t.field("contentType").value(filter.contentType()))));
+            }
+            if (filter.statusCode() != null) {
+                filterQueries.add(Query.of(q -> q.term(t -> t.field("statusCode").value(filter.statusCode()))));
+            }
+            if (filter.fromDate() != null || filter.toDate() != null) {
+                filterQueries.add(Query.of(q -> q.range(r -> r.date(d -> {
+                    d.field("fetchedAt");
+                    if (filter.fromDate() != null) {
+                        d.gte(filter.fromDate().toString());
+                    }
+                    if (filter.toDate() != null) {
+                        d.lte(filter.toDate().toString());
+                    }
+                    return d;
+                }))));
+            }
         }
 
-        if (filter.statusCode() != null) {
-            filterQueries.add(Query.of(q -> q.term(t -> t.field("statusCode").value(filter.statusCode()))));
+        if (mustQueries.size() == 1 && filterQueries.isEmpty() && mustNotQueries.isEmpty()) {
+            return mustQueries.get(0);
         }
 
-        if (filter.fromDate() != null || filter.toDate() != null) {
-            filterQueries.add(Query.of(q -> q.range(r -> r.date(d -> {
-                d.field("fetchedAt");
-                if (filter.fromDate() != null) {
-                    d.gte(filter.fromDate().toString());
-                }
-                if (filter.toDate() != null) {
-                    d.lte(filter.toDate().toString());
-                }
-                return d;
-            }))));
-        }
-
-        if (filterQueries.isEmpty()) {
-            return relevanceQuery;
-        }
-
-        return Query.of(q -> q.bool(b -> b
-                .must(relevanceQuery)
-                .filter(filterQueries)
-        ));
+        return Query.of(q -> q.bool(b -> {
+            if (!mustQueries.isEmpty()) {
+                b.must(mustQueries);
+            }
+            if (!filterQueries.isEmpty()) {
+                b.filter(filterQueries);
+            }
+            if (!mustNotQueries.isEmpty()) {
+                b.mustNot(mustNotQueries);
+            }
+            return b;
+        }));
     }
 
     public Highlight buildHighlight() {
