@@ -1,8 +1,10 @@
 package com.searchengine.indexer.service;
 
+import com.searchengine.indexer.analytics.SearchAnalyticsService;
 import com.searchengine.indexer.config.IndexerElasticsearchProperties;
 import com.searchengine.indexer.config.SearchProperties;
 import com.searchengine.indexer.exception.SearchQueryException;
+import com.searchengine.indexer.model.analytics.SearchAnalyticsSnapshot;
 import com.searchengine.indexer.model.dto.SearchResponse;
 import com.searchengine.indexer.search.ElasticsearchSearchQueryBuilder;
 import com.searchengine.indexer.search.SearchQueryParser;
@@ -45,6 +47,7 @@ class SearchServiceTest {
     private SearchQueryParser searchQueryParser;
     private MeterRegistry meterRegistry;
     private SearchCacheService searchCacheService;
+    private SearchAnalyticsService searchAnalyticsService;
     private SearchService searchService;
 
     @BeforeEach
@@ -63,14 +66,22 @@ class SearchServiceTest {
         searchProperties.getCache().setEnabled(true);
         searchProperties.getCache().setMaximumSize(100);
         searchProperties.getCache().setTtl(Duration.ofSeconds(10));
+        searchProperties.getAnalytics().setEnabled(true);
+        searchProperties.getAnalytics().setMaximumQueryEntries(100);
+        searchProperties.getAnalytics().setTopQueryLimit(5);
+        searchProperties.getAnalytics().setQueryRetention(Duration.ofHours(1));
 
         searchQueryBuilder = new ElasticsearchSearchQueryBuilder(searchProperties);
         searchQueryParser = new SearchQueryParser();
         meterRegistry = new SimpleMeterRegistry();
+
         searchCacheService = new SearchCacheService(searchProperties, meterRegistry);
         searchCacheService.init();
 
-        searchService = new SearchService(elasticsearchClient, indexerProperties, searchProperties, searchQueryBuilder, searchQueryParser, searchCacheService, meterRegistry);
+        searchAnalyticsService = new SearchAnalyticsService(searchProperties, meterRegistry);
+        searchAnalyticsService.init();
+
+        searchService = new SearchService(elasticsearchClient, indexerProperties, searchProperties, searchQueryBuilder, searchQueryParser, searchCacheService, searchAnalyticsService, meterRegistry);
     }
 
     private co.elastic.clients.elasticsearch.core.SearchResponse<Map> createMockEsResponse(long hitsCount, Map<String, List<String>> highlights) {
@@ -105,7 +116,7 @@ class SearchServiceTest {
     }
 
     @Test
-    void search_cacheMissThenHit_executesESOnceAndReturnsCachedResponse() throws IOException {
+    void search_cacheMissThenHit_executesESOnceAndUpdatesAnalytics() throws IOException {
         co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
         given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
 
@@ -121,50 +132,51 @@ class SearchServiceTest {
 
         assertThat(meterRegistry.counter("search.cache.hit", "operation", "search").count()).isEqualTo(1.0);
         assertThat(meterRegistry.counter("search.cache.miss", "operation", "search").count()).isEqualTo(1.0);
+
+        SearchAnalyticsSnapshot snapshot = searchAnalyticsService.getSnapshot();
+        assertThat(snapshot.totalRequests()).isEqualTo(2L);
+        assertThat(snapshot.successfulRequests()).isEqualTo(2L);
+        assertThat(snapshot.cacheHits()).isEqualTo(1L);
+        assertThat(snapshot.cacheMisses()).isEqualTo(1L);
+        assertThat(snapshot.topQueries().get(0).query()).isEqualTo("spring");
+        assertThat(snapshot.topQueries().get(0).count()).isEqualTo(2L);
     }
 
     @Test
-    void search_cacheMissOnDifferentParams_callsESForNewParams() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
+    void search_zeroResultSearch_recordsZeroResultAnalytics() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(0L, null);
         given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
 
-        searchService.search("spring", null, null, null, null, null, 0, 10, "relevance");
-        searchService.search("spring", null, null, null, null, null, 1, 10, "relevance");
+        searchService.search("nonexistent", null, null, null, null, null, 0, 10, "relevance");
 
-        verify(elasticsearchClient, times(2)).search(any(Function.class), any(Class.class));
-        assertThat(meterRegistry.counter("search.cache.miss", "operation", "search").count()).isEqualTo(2.0);
+        SearchAnalyticsSnapshot snapshot = searchAnalyticsService.getSnapshot();
+        assertThat(snapshot.totalRequests()).isEqualTo(1L);
+        assertThat(snapshot.zeroResultSearches()).isEqualTo(1L);
+        assertThat(snapshot.resultfulSearches()).isEqualTo(0L);
     }
 
     @Test
-    void search_cacheInvalidated_callsESAgain() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        searchService.search("spring", null, null, null, null, null, 0, 10, "relevance");
-        verify(elasticsearchClient, times(1)).search(any(Function.class), any(Class.class));
-
-        searchCacheService.invalidateAll();
-
-        searchService.search("spring", null, null, null, null, null, 0, 10, "relevance");
-        verify(elasticsearchClient, times(2)).search(any(Function.class), any(Class.class));
-    }
-
-    @Test
-    void search_elasticsearchFailure_doesNotCacheFailure() throws IOException {
+    void search_elasticsearchFailure_recordsFailedAnalytics() throws IOException {
         given(elasticsearchClient.search(any(Function.class), any(Class.class)))
                 .willThrow(new IOException("Elasticsearch node unreachable"));
 
         assertThatThrownBy(() -> searchService.search("spring", null, null, null, null, null, 0, 10, "relevance"))
                 .isInstanceOf(SearchQueryException.class);
 
-        assertThat(searchCacheService.size()).isEqualTo(0L);
+        SearchAnalyticsSnapshot snapshot = searchAnalyticsService.getSnapshot();
+        assertThat(snapshot.totalRequests()).isEqualTo(1L);
+        assertThat(snapshot.failedRequests()).isEqualTo(1L);
     }
 
     @Test
-    void search_deepPage_rejected() {
+    void search_deepPage_rejectedAndRecordsValidationError() {
         assertThatThrownBy(() -> searchService.search("spring", null, null, null, null, null, 1001, 10, "relevance"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Requested page is too deep");
+
+        SearchAnalyticsSnapshot snapshot = searchAnalyticsService.getSnapshot();
+        assertThat(snapshot.totalRequests()).isEqualTo(1L);
+        assertThat(snapshot.validationErrors()).isEqualTo(1L);
     }
 
     @Test

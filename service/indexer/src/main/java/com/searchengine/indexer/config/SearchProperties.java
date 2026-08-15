@@ -24,6 +24,7 @@ public class SearchProperties {
     private long slowQueryThresholdMs = 1000;
 
     private Cache cache = new Cache();
+    private Analytics analytics = new Analytics();
     private Relevance relevance = new Relevance();
     private Fuzzy fuzzy = new Fuzzy();
     private Highlight highlight = new Highlight();
@@ -35,6 +36,15 @@ public class SearchProperties {
         private boolean enabled = true;
         private long maximumSize = 1000;
         private Duration ttl = Duration.ofSeconds(60);
+    }
+
+    @Getter
+    @Setter
+    public static class Analytics {
+        private boolean enabled = true;
+        private long maximumQueryEntries = 5000;
+        private int topQueryLimit = 20;
+        private Duration queryRetention = Duration.ofHours(1);
     }
 
     @Getter
@@ -96,6 +106,17 @@ public class SearchProperties {
             }
             if (cache.getTtl() == null || cache.getTtl().isNegative() || cache.getTtl().isZero()) {
                 throw new IllegalStateException("Search cache TTL must be greater than 0");
+            }
+        }
+        if (analytics.isEnabled()) {
+            if (analytics.getMaximumQueryEntries() <= 0 || analytics.getMaximumQueryEntries() > 100000) {
+                throw new IllegalStateException("Analytics maximum-query-entries must be between 1 and 100000");
+            }
+            if (analytics.getTopQueryLimit() < 1 || analytics.getTopQueryLimit() > 100) {
+                throw new IllegalStateException("Analytics top-query-limit must be between 1 and 100");
+            }
+            if (analytics.getQueryRetention() == null || analytics.getQueryRetention().isNegative() || analytics.getQueryRetention().isZero()) {
+                throw new IllegalStateException("Analytics query-retention must be greater than 0");
             }
         }
         if (relevance.getTitleBoost() <= 0) {

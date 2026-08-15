@@ -1,6 +1,6 @@
 # Indexer Service
 
-The **Indexer Service** is Service 3 in the Search Engine pipeline. Its primary role is to consume processed document content from Kafka (`search-document-topic`), index the documents into Elasticsearch using explicit mappings, and expose REST Search APIs for querying indexed content with field-weighted relevance scoring, phrase matching, advanced query syntax & operators, production-hardened resilience, response optimization, in-memory caching, fuzzy typo tolerance, search result highlighting, search suggestions / autocomplete, advanced search filters, pagination, and sorting support.
+The **Indexer Service** is Service 3 in the Search Engine pipeline. Its primary role is to consume processed document content from Kafka (`search-document-topic`), index the documents into Elasticsearch using explicit mappings, and expose REST Search APIs for querying indexed content with field-weighted relevance scoring, phrase matching, advanced query syntax & operators, production-hardened resilience, response optimization, in-memory caching, search analytics & query tracking, fuzzy typo tolerance, search result highlighting, search suggestions / autocomplete, advanced search filters, pagination, and sorting support.
 
 ---
 
@@ -26,8 +26,11 @@ IndexerService
 SearchDocumentIndexer (Invalidates Search Cache on Indexing Success)
     ↓
 Elasticsearch (search-documents)
-    ├── SearchService (Source Filtering + Caffeine Cache) → GET /api/search?q={query}&language={lang}&contentType={type}&statusCode={status}&fromDate={from}&toDate={to}&page={page}&size={size}&sort={sort}
-    └── SearchSuggestionService                          → GET /api/search/suggest?q={prefix}
+    ├── SearchService (Source Filtering + Caffeine Cache + SearchAnalyticsService) → GET /api/search?q={query}&language={lang}&contentType={type}&statusCode={status}&fromDate={from}&toDate={to}&page={page}&size={size}&sort={sort}
+    ├── SearchSuggestionService                                                   → GET /api/search/suggest?q={prefix}
+    └── SearchAnalyticsController                                                 → GET /api/search/analytics
+                                                                                    GET /api/search/analytics/zero-results
+                                                                                    POST /api/search/analytics/reset
 ```
 
 ---
@@ -102,7 +105,7 @@ Elasticsearch (search-documents)
 - Enforces a minimum prefix length of 2 characters (`min-prefix-length: 2`).
 - Returns clean `SearchSuggestionResponse` DTO containing `query` and `suggestions` list (`List<String>`).
 - Normalizes and deduplicates candidates deterministically while respecting `max-results: 8`.
-- Suggestions endpoints are intentionally NOT cached to provide live completion candidates.
+- Suggestions endpoints are intentionally NOT cached and NOT recorded in search analytics.
 
 ### Feature 10 — Advanced Search Filters
 - Extends `GET /api/search` with optional query filters:
@@ -143,10 +146,21 @@ Elasticsearch (search-documents)
 - **Application-Level Search Cache**: Bounded in-memory Caffeine cache (`SearchCacheService`) storing successful `GET /api/search` responses. Configured under `indexer.search.cache` (`enabled: true`, `maximum-size: 1000`, `ttl: 60s`).
 - **Deterministic Cache Key**: Immutable `SearchCacheKey` incorporating trimmed query string, `page`, `size`, `sort`, all search filters (`language`, `contentType`, `statusCode`, `fromDate`, `toDate`), and configuration version namespace to prevent stale responses across config changes.
 - **Cache Invalidation on Indexing**: Automatically clears/invalidates cached search responses when `SearchDocumentIndexer.index(document)` succeeds. Indexing failures leave cache untouched.
-- **Cache Metrics & Logging**: Emits Micrometer metrics (`search.cache.hit`, `search.cache.miss`, `search.cache.put`) tagged with `operation="search"` and logs structured events (`SEARCH_CACHE_HIT`, `SEARCH_CACHE_MISS`, `SEARCH_CACHE_PUT`, `SEARCH_CACHE_INVALIDATED`).
+
+### Feature 15 — Search Analytics & Query Tracking
+- **Privacy-Safe Search Analytics Layer**: `SearchAnalyticsService` tracks search request volume, successes, failures, validation errors, zero-result searches, resultful searches, execution latency (total/max), cache hits/misses, and query frequency statistics without storing IP addresses, user IDs, cookies, session IDs, or full result URLs.
+- **Bounded In-Memory Query Tracking**: Utilizes Caffeine cache for query frequency tracking (`maximum-query-entries: 5000`, `query-retention: 1h`). Query evictions do NOT reduce global counters (`totalRequests`, `successfulRequests`, etc.).
+- **Internal REST Analytics Endpoints**:
+  - `GET /api/search/analytics`: Returns aggregate snapshot containing `totalRequests`, `successfulRequests`, `failedRequests`, `validationErrors`, `zeroResultSearches`, `resultfulSearches`, `cacheHits`, `cacheMisses`, `averageLatencyMs`, `maxLatencyMs`, `trackedQueries`, and `topQueries` list (bounded by `top-query-limit: 20`).
+  - `GET /api/search/analytics/zero-results`: Returns most frequent zero-result queries sorted by zero-result count descending.
+  - `POST /api/search/analytics/reset`: Clears in-memory analytics counters and query frequency statistics without calling Elasticsearch or modifying search cache/indexes. Returns HTTP 204 No Content.
+- **Micrometer Observability**: Emits Micrometer metrics (`search.analytics.requests`, `search.analytics.success`, `search.analytics.errors`, `search.analytics.validation_errors`, `search.analytics.zero_results`, `search.analytics.resultful`, `search.analytics.duration`) with safe low-cardinality label `operation="search"`.
+
+> [!WARNING]
+> **Operational Security Note**: The analytics endpoints (`GET /api/search/analytics`, `GET /api/search/analytics/zero-results`, `POST /api/search/analytics/reset`) expose operational search metrics and reset capabilities. In production deployments, these endpoints MUST be protected behind authentication/authorization or restricted to an internal network boundary.
 
 > [!NOTE]
-> **Intentionally NOT implemented yet**: Semantic/vector search, spell correction, synonyms, query history, or personalized recommendations.
+> **In-Memory Volatility**: Analytics statistics are held purely in memory and reset upon service restart.
 
 ---
 
@@ -155,11 +169,14 @@ Elasticsearch (search-documents)
 ```
 service/indexer/src/main/java/com/searchengine/indexer/
 ├── IndexerApplication.java                      # Spring Boot main application entry point
+├── analytics/
+│   ├── SearchAnalyticsController.java          # REST controller for /api/search/analytics endpoints
+│   └── SearchAnalyticsService.java             # In-memory bounded search analytics manager
 ├── config/
 │   ├── ElasticsearchConfig.java                # Bean definitions for RestClient, ElasticsearchTransport, and ElasticsearchClient
 │   ├── ElasticsearchProperties.java            # Connection configuration properties prefixed with 'elasticsearch'
 │   ├── IndexerElasticsearchProperties.java     # Index configuration properties prefixed with 'indexer.elasticsearch'
-│   └── SearchProperties.java                   # Search API configuration properties (including cache and hardening limits)
+│   └── SearchProperties.java                   # Search API configuration properties (cache, hardening, analytics)
 ├── consumer/
 │   └── SearchDocumentConsumer.java             # Kafka listener for search-document-topic using manual ACK
 ├── controller/
@@ -180,6 +197,10 @@ service/indexer/src/main/java/com/searchengine/indexer/
 ├── mapper/
 │   └── SearchDocumentMapper.java               # Maps SearchDocument records to Elasticsearch document Map
 ├── model/
+│   ├── analytics/
+│   │   ├── QueryStats.java                     # Query statistics DTO record
+│   │   ├── SearchAnalyticsSnapshot.java        # Analytics snapshot DTO record
+│   │   └── ZeroResultsResponse.java            # Zero-results response DTO record
 │   ├── dto/
 │   │   ├── SearchFilter.java                   # Filter parameters record DTO
 │   │   ├── SearchResponse.java                 # Search API response wrapper
@@ -197,7 +218,7 @@ service/indexer/src/main/java/com/searchengine/indexer/
 ├── service/
 │   ├── IndexerService.java                     # Domain service orchestrating document indexing
 │   ├── SearchCacheService.java                 # In-memory Caffeine search cache manager with metrics and logging
-│   ├── SearchService.java                      # Service executing source-filtered, cached, hardened search queries
+│   ├── SearchService.java                      # Service executing source-filtered, cached, analytics-tracked search queries
 │   └── SearchSuggestionService.java            # Service executing prefix suggestion queries
 └── validator/
     └── SearchDocumentValidator.java            # Validates SearchDocument required fields and bounds
@@ -229,6 +250,10 @@ Default Port: `8083`
 | `indexer.search.cache.enabled` | `true` | `SEARCH_CACHE_ENABLED` | Enables in-memory Caffeine search response caching |
 | `indexer.search.cache.maximum-size` | `1000` | `SEARCH_CACHE_MAXIMUM_SIZE` | Maximum allowed entries in Caffeine cache |
 | `indexer.search.cache.ttl` | `60s` | `SEARCH_CACHE_TTL` | Cache entry time-to-live after write |
+| `indexer.search.analytics.enabled` | `true` | `SEARCH_ANALYTICS_ENABLED` | Enables in-memory search analytics collection |
+| `indexer.search.analytics.maximum-query-entries` | `5000` | `SEARCH_ANALYTICS_MAXIMUM_QUERY_ENTRIES` | Maximum tracked query entries in analytics cache |
+| `indexer.search.analytics.top-query-limit` | `20` | `SEARCH_ANALYTICS_TOP_QUERY_LIMIT` | Maximum top queries returned in analytics snapshot |
+| `indexer.search.analytics.query-retention` | `1h` | `SEARCH_ANALYTICS_QUERY_RETENTION` | Time-to-live retention for tracked query stats |
 | `indexer.search.relevance.title-boost` | `4.0` | `SEARCH_TITLE_BOOST` | Field relevance boost for document `title` |
 | `indexer.search.relevance.headings-boost` | `3.0` | `SEARCH_HEADINGS_BOOST` | Field relevance boost for document `headings` |
 | `indexer.search.relevance.meta-description-boost` | `2.0` | `SEARCH_META_DESCRIPTION_BOOST` | Field relevance boost for `metaDescription` |
@@ -245,27 +270,68 @@ Default Port: `8083`
 
 ## API Specification
 
-### Search Endpoint with Source Filtering and Caching
+### 1. Search Endpoint
 ```http
 GET /api/search?q={query}&language={lang}&contentType={type}&statusCode={status}&fromDate={from}&toDate={to}&page={page}&size={size}&sort={sort}
 ```
 
-#### Verification & Cache Flow
+### 2. Search Analytics Endpoint
+```http
+GET /api/search/analytics
+```
 
-1. **Initial Search Request (Cache MISS)**:
-   ```http
-   GET /api/search?q=spring
-   ```
-   *Logs*: `SEARCH_CACHE_MISS page=0 size=10 sort=relevance`, `SEARCH_QUERY_EXECUTED durationMs=...`, `SEARCH_CACHE_PUT page=0 size=10 sort=relevance`.
+#### Example Response (HTTP 200 OK):
+```json
+{
+  "totalRequests": 1200,
+  "successfulRequests": 1160,
+  "failedRequests": 20,
+  "validationErrors": 20,
+  "zeroResultSearches": 145,
+  "resultfulSearches": 1015,
+  "cacheHits": 430,
+  "cacheMisses": 730,
+  "averageLatencyMs": 42.8,
+  "maxLatencyMs": 820,
+  "trackedQueries": 312,
+  "topQueries": [
+    {
+      "query": "spring boot",
+      "count": 82,
+      "zeroResultCount": 2,
+      "totalHits": 1240,
+      "lastSeenAt": "2026-08-15T21:00:00Z"
+    }
+  ]
+}
+```
 
-2. **Identical Search Request (Cache HIT)**:
-   ```http
-   GET /api/search?q=spring
-   ```
-   *Logs*: `SEARCH_CACHE_HIT page=0 size=10 sort=relevance` (Elasticsearch query bypassed).
+### 3. Zero-Result Queries Endpoint
+```http
+GET /api/search/analytics/zero-results
+```
 
-3. **Cache Invalidation on Document Indexing**:
-   When a new document is indexed via Kafka consumer, `SearchDocumentIndexer.index(doc)` triggers `SEARCH_CACHE_INVALIDATED`. The next query executes against Elasticsearch and repopulates the cache.
+#### Example Response (HTTP 200 OK):
+```json
+{
+  "queries": [
+    {
+      "query": "sprng boot",
+      "count": 12
+    },
+    {
+      "query": "java microservice",
+      "count": 8
+    }
+  ]
+}
+```
+
+### 4. Reset Analytics Endpoint
+```http
+POST /api/search/analytics/reset
+```
+*Response*: `HTTP 204 No Content` (clears in-memory search analytics state).
 
 ---
 

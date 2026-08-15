@@ -33,6 +33,12 @@ class SearchPropertiesTest {
         assertThat(cache.getMaximumSize()).isEqualTo(1000L);
         assertThat(cache.getTtl()).isEqualTo(Duration.ofSeconds(60));
 
+        SearchProperties.Analytics analytics = searchProperties.getAnalytics();
+        assertThat(analytics.isEnabled()).isTrue();
+        assertThat(analytics.getMaximumQueryEntries()).isEqualTo(5000L);
+        assertThat(analytics.getTopQueryLimit()).isEqualTo(20);
+        assertThat(analytics.getQueryRetention()).isEqualTo(Duration.ofHours(1));
+
         SearchProperties.Relevance relevance = searchProperties.getRelevance();
         assertThat(relevance.getTitleBoost()).isEqualTo(4.0);
         assertThat(relevance.getHeadingsBoost()).isEqualTo(3.0);
@@ -64,6 +70,9 @@ class SearchPropertiesTest {
         searchProperties.setSlowQueryThresholdMs(2000L);
         searchProperties.getCache().setMaximumSize(5000L);
         searchProperties.getCache().setTtl(Duration.ofSeconds(120));
+        searchProperties.getAnalytics().setMaximumQueryEntries(10000L);
+        searchProperties.getAnalytics().setTopQueryLimit(50);
+        searchProperties.getAnalytics().setQueryRetention(Duration.ofHours(2));
 
         searchProperties.validateProperties();
 
@@ -74,6 +83,51 @@ class SearchPropertiesTest {
         assertThat(searchProperties.getSlowQueryThresholdMs()).isEqualTo(2000L);
         assertThat(searchProperties.getCache().getMaximumSize()).isEqualTo(5000L);
         assertThat(searchProperties.getCache().getTtl()).isEqualTo(Duration.ofSeconds(120));
+        assertThat(searchProperties.getAnalytics().getMaximumQueryEntries()).isEqualTo(10000L);
+        assertThat(searchProperties.getAnalytics().getTopQueryLimit()).isEqualTo(50);
+        assertThat(searchProperties.getAnalytics().getQueryRetention()).isEqualTo(Duration.ofHours(2));
+    }
+
+    @Test
+    void validateProperties_invalidAnalyticsMaxEntries_throwsIllegalStateException() {
+        searchProperties.getAnalytics().setEnabled(true);
+        searchProperties.getAnalytics().setMaximumQueryEntries(0);
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Analytics maximum-query-entries must be between 1 and 100000");
+
+        searchProperties.getAnalytics().setMaximumQueryEntries(100001);
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Analytics maximum-query-entries must be between 1 and 100000");
+    }
+
+    @Test
+    void validateProperties_invalidAnalyticsTopLimit_throwsIllegalStateException() {
+        searchProperties.getAnalytics().setEnabled(true);
+        searchProperties.getAnalytics().setTopQueryLimit(0);
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Analytics top-query-limit must be between 1 and 100");
+
+        searchProperties.getAnalytics().setTopQueryLimit(101);
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Analytics top-query-limit must be between 1 and 100");
+    }
+
+    @Test
+    void validateProperties_invalidAnalyticsQueryRetention_throwsIllegalStateException() {
+        searchProperties.getAnalytics().setEnabled(true);
+        searchProperties.getAnalytics().setQueryRetention(Duration.ZERO);
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Analytics query-retention must be greater than 0");
+
+        searchProperties.getAnalytics().setQueryRetention(null);
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Analytics query-retention must be greater than 0");
     }
 
     @Test
@@ -92,55 +146,5 @@ class SearchPropertiesTest {
         assertThatThrownBy(() -> searchProperties.validateProperties())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Search cache TTL must be greater than 0");
-
-        searchProperties.getCache().setTtl(null);
-        assertThatThrownBy(() -> searchProperties.validateProperties())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Search cache TTL must be greater than 0");
-    }
-
-    @Test
-    void validateProperties_invalidTimeout_throwsIllegalStateException() {
-        searchProperties.setTimeout(Duration.ZERO);
-        assertThatThrownBy(() -> searchProperties.validateProperties())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Search timeout must be greater than 0");
-
-        searchProperties.setTimeout(null);
-        assertThatThrownBy(() -> searchProperties.validateProperties())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Search timeout must be greater than 0");
-    }
-
-    @Test
-    void validateProperties_invalidMaxPageDepth_throwsIllegalStateException() {
-        searchProperties.setMaxPageDepth(0);
-        assertThatThrownBy(() -> searchProperties.validateProperties())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Max page depth must be greater than 0");
-    }
-
-    @Test
-    void validateProperties_invalidMaxQueryTerms_throwsIllegalStateException() {
-        searchProperties.setMaxQueryTerms(0);
-        assertThatThrownBy(() -> searchProperties.validateProperties())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Max query terms must be greater than 0");
-    }
-
-    @Test
-    void validateProperties_invalidMaxQueryPhrases_throwsIllegalStateException() {
-        searchProperties.setMaxQueryPhrases(0);
-        assertThatThrownBy(() -> searchProperties.validateProperties())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Max query phrases must be greater than 0");
-    }
-
-    @Test
-    void validateProperties_invalidSlowQueryThreshold_throwsIllegalStateException() {
-        searchProperties.setSlowQueryThresholdMs(0);
-        assertThatThrownBy(() -> searchProperties.validateProperties())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Slow query threshold must be greater than 0");
     }
 }

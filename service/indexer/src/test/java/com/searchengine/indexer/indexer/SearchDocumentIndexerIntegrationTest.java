@@ -1,6 +1,9 @@
 package com.searchengine.indexer.indexer;
 
+import com.searchengine.indexer.analytics.SearchAnalyticsService;
 import com.searchengine.indexer.initializer.SearchDocumentIndexInitializer;
+import com.searchengine.indexer.model.analytics.SearchAnalyticsSnapshot;
+import com.searchengine.indexer.model.analytics.ZeroResultsResponse;
 import com.searchengine.indexer.model.dto.SearchResponse;
 import com.searchengine.indexer.model.dto.SearchSuggestionResponse;
 import com.searchengine.indexer.model.kafka.SearchDocument;
@@ -39,8 +42,11 @@ class SearchDocumentIndexerIntegrationTest {
     @Autowired
     private SearchSuggestionService searchSuggestionService;
 
+    @Autowired
+    private SearchAnalyticsService searchAnalyticsService;
+
     @Test
-    void endToEndElasticsearchIndexingPaginationRelevanceFuzzyHighlightingSuggestionsFiltersPhraseMatchingAdvancedQuerySyntaxAndCaching() throws Exception {
+    void endToEndElasticsearchIndexingPaginationRelevanceFuzzyHighlightingSuggestionsFiltersPhraseMatchingAdvancedQuerySyntaxCachingAndAnalytics() throws Exception {
         // 1. Verify index created by initializer
         indexInitializer.initializeIndex();
         boolean indexExists = elasticsearchClient.indices().exists(e -> e.index("search-documents")).value();
@@ -146,9 +152,11 @@ class SearchDocumentIndexerIntegrationTest {
         assertThat(relevanceResponse.results().get(0).urlHash()).isEqualTo("hash-rel-a");
 
         // 8. Test Feature 9 Suggestions / Autocomplete
+        long requestsBeforeSuggest = searchAnalyticsService.getSnapshot().totalRequests();
         SearchSuggestionResponse suggestionResponse = searchSuggestionService.suggest("spr");
         assertThat(suggestionResponse.query()).isEqualTo("spr");
         assertThat(suggestionResponse.suggestions()).isNotEmpty();
+        assertThat(searchAnalyticsService.getSnapshot().totalRequests()).isEqualTo(requestsBeforeSuggest); // Suggestion NOT counted as search
 
         SearchSuggestionResponse emptySuggestionResponse = searchSuggestionService.suggest("xyz");
         assertThat(emptySuggestionResponse.query()).isEqualTo("xyz");
@@ -261,30 +269,42 @@ class SearchDocumentIndexerIntegrationTest {
 
         // 12. Test Feature 14 Caching & Invalidation Integration
         SearchDocument cacheDoc1 = new SearchDocument(
-                "https://searchengine.org/cache1", "https://searchengine.org/cache1", "hash-cache-1",
-                "CacheTestKeyword Initial Title", "Meta description for cache doc 1", List.of("Cache"),
+                "https://searchengine.org/cache1", "https://searchengine.org/cache1", "hash-cache-unique-1",
+                "UniqueCacheKeyword Initial Title", "Meta description for cache doc 1", List.of("Cache"),
                 "Body content for cache test keyword", "en", 100, 200, "text/html", now, now
         );
         searchDocumentIndexer.index(cacheDoc1);
         elasticsearchClient.indices().refresh(r -> r.index("search-documents"));
 
-        SearchResponse cacheResp1 = searchService.search("CacheTestKeyword", 0, 10, "relevance");
-        assertThat(cacheResp1.totalHits()).isGreaterThanOrEqualTo(1L);
+        SearchResponse cacheResp1 = searchService.search("UniqueCacheKeyword", 0, 10, "relevance");
+        assertThat(cacheResp1.totalHits()).isEqualTo(1L);
 
         // Subsequent search returns cached response
-        SearchResponse cacheResp2 = searchService.search("CacheTestKeyword", 0, 10, "relevance");
-        assertThat(cacheResp2.totalHits()).isEqualTo(cacheResp1.totalHits());
+        SearchResponse cacheResp2 = searchService.search("UniqueCacheKeyword", 0, 10, "relevance");
+        assertThat(cacheResp2.totalHits()).isEqualTo(1L);
 
         // Indexing a new document invalidates search cache
         SearchDocument cacheDoc2 = new SearchDocument(
-                "https://searchengine.org/cache2", "https://searchengine.org/cache2", "hash-cache-2",
-                "CacheTestKeyword Second Title", "Meta description for cache doc 2", List.of("Cache"),
+                "https://searchengine.org/cache2", "https://searchengine.org/cache2", "hash-cache-unique-2",
+                "UniqueCacheKeyword Second Title", "Meta description for cache doc 2", List.of("Cache"),
                 "Body content for cache test keyword second document", "en", 100, 200, "text/html", now, now
         );
         searchDocumentIndexer.index(cacheDoc2);
         elasticsearchClient.indices().refresh(r -> r.index("search-documents"));
 
-        SearchResponse cacheResp3 = searchService.search("CacheTestKeyword", 0, 10, "relevance");
-        assertThat(cacheResp3.totalHits()).isEqualTo(cacheResp1.totalHits() + 1);
+        SearchResponse cacheResp3 = searchService.search("UniqueCacheKeyword", 0, 10, "relevance");
+        assertThat(cacheResp3.totalHits()).isEqualTo(2L);
+
+        // 13. Test Feature 15 Search Analytics Integration
+        SearchResponse zeroHitResp = searchService.search("NonExistentKeywordXYZ999", 0, 10, "relevance");
+        assertThat(zeroHitResp.totalHits()).isEqualTo(0L);
+
+        SearchAnalyticsSnapshot snapshot = searchAnalyticsService.getSnapshot();
+        assertThat(snapshot.totalRequests()).isGreaterThan(0L);
+        assertThat(snapshot.successfulRequests()).isGreaterThan(0L);
+        assertThat(snapshot.zeroResultSearches()).isGreaterThanOrEqualTo(1L);
+
+        ZeroResultsResponse zeroResultsResponse = searchAnalyticsService.getZeroResults();
+        assertThat(zeroResultsResponse.queries()).extracting("query").contains("NonExistentKeywordXYZ999");
     }
 }

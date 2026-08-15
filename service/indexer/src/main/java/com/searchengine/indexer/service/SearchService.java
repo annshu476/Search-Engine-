@@ -1,5 +1,6 @@
 package com.searchengine.indexer.service;
 
+import com.searchengine.indexer.analytics.SearchAnalyticsService;
 import com.searchengine.indexer.config.IndexerElasticsearchProperties;
 import com.searchengine.indexer.config.SearchProperties;
 import com.searchengine.indexer.exception.SearchQueryException;
@@ -43,6 +44,7 @@ public class SearchService {
     private final ElasticsearchSearchQueryBuilder searchQueryBuilder;
     private final SearchQueryParser searchQueryParser;
     private final SearchCacheService searchCacheService;
+    private final SearchAnalyticsService searchAnalyticsService;
     private final MeterRegistry meterRegistry;
 
     public SearchResponse search(String query) {
@@ -55,6 +57,8 @@ public class SearchService {
 
     public SearchResponse search(String query, String language, String contentType, Integer statusCode, String fromDate, String toDate, int page, int size, String sort) {
         meterRegistry.counter("search.requests").increment();
+        searchAnalyticsService.recordRequest();
+        long requestStartTime = System.currentTimeMillis();
 
         try {
             if (query == null || query.isBlank()) {
@@ -68,7 +72,13 @@ public class SearchService {
                 throw new IllegalArgumentException("Search query exceeds maximum allowed length");
             }
 
-            ParsedSearchQuery parsedQuery = searchQueryParser.parse(trimmedQuery);
+            ParsedSearchQuery parsedQuery;
+            try {
+                parsedQuery = searchQueryParser.parse(trimmedQuery);
+            } catch (RuntimeException e) {
+                recordValidationError();
+                throw e;
+            }
 
             int totalTerms = parsedQuery.normalTerms().size() + parsedQuery.requiredTerms().size() + parsedQuery.excludedTerms().size();
             int totalPhrases = parsedQuery.exactPhrases().size() + parsedQuery.requiredPhrases().size() + parsedQuery.excludedPhrases().size();
@@ -120,6 +130,8 @@ public class SearchService {
 
             SearchResponse cachedResponse = searchCacheService.get(cacheKey);
             if (cachedResponse != null) {
+                long cacheDurationMs = System.currentTimeMillis() - requestStartTime;
+                searchAnalyticsService.recordSuccess(trimmedQuery, cachedResponse.totalHits(), cacheDurationMs);
                 return cachedResponse;
             }
 
@@ -127,8 +139,6 @@ public class SearchService {
             String indexName = indexerElasticsearchProperties.getIndexName();
             Query esQuery = searchQueryBuilder.buildSearchQuery(parsedQuery, filter);
             Highlight highlightConfig = searchQueryBuilder.buildHighlight();
-
-            long startTime = System.currentTimeMillis();
 
             try {
                 co.elastic.clients.elasticsearch.core.SearchResponse<Map> esResponse = elasticsearchClient.search(s -> {
@@ -153,7 +163,7 @@ public class SearchService {
                     return s;
                 }, Map.class);
 
-                long durationMs = System.currentTimeMillis() - startTime;
+                long durationMs = System.currentTimeMillis() - requestStartTime;
                 meterRegistry.timer("search.duration", "sort", normalizedSort).record(durationMs, TimeUnit.MILLISECONDS);
 
                 if (durationMs > searchProperties.getSlowQueryThresholdMs()) {
@@ -193,6 +203,7 @@ public class SearchService {
                 }
 
                 meterRegistry.counter("search.success").increment();
+                searchAnalyticsService.recordSuccess(trimmedQuery, totalHits, durationMs);
                 log.info("SEARCH_QUERY_EXECUTED query={} page={} size={} sort={} totalHits={} totalPages={} returnedResults={} durationMs={}",
                         query, page, size, normalizedSort, totalHits, totalPages, results.size(), durationMs);
 
@@ -202,10 +213,11 @@ public class SearchService {
                 return searchResponse;
 
             } catch (Exception e) {
+                searchAnalyticsService.recordFailure();
                 if (isTimeoutException(e)) {
                     meterRegistry.counter("search.timeouts").increment();
                     meterRegistry.counter("search.errors").increment();
-                    log.error("SEARCH_QUERY_TIMEOUT query={} index={} durationMs={} error={}", query, indexName, System.currentTimeMillis() - startTime, e.getMessage());
+                    log.error("SEARCH_QUERY_TIMEOUT query={} index={} durationMs={} error={}", query, indexName, System.currentTimeMillis() - requestStartTime, e.getMessage());
                     throw new SearchQueryException("Search query timed out for: " + query, e);
                 } else {
                     meterRegistry.counter("search.errors").increment();
@@ -214,13 +226,14 @@ public class SearchService {
                 }
             }
 
-        } catch (IllegalArgumentException e) {
+        } catch (RuntimeException e) {
             throw e;
         }
     }
 
     private void recordValidationError() {
         meterRegistry.counter("search.validation.errors").increment();
+        searchAnalyticsService.recordValidationError();
     }
 
     private boolean isTimeoutException(Exception e) {
