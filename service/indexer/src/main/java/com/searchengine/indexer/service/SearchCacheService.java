@@ -52,10 +52,14 @@ public class SearchCacheService {
         SearchProperties.Relevance r = searchProperties.getRelevance();
         SearchProperties.Fuzzy f = searchProperties.getFuzzy();
         SearchProperties.Highlight h = searchProperties.getHighlight();
-        return "v1:" + r.getTitleBoost() + ":" + r.getHeadingsBoost() + ":" + r.getMetaDescriptionBoost()
+        SearchProperties.Synonyms syn = searchProperties.getSynonyms();
+        SearchProperties.SpellCorrection sc = searchProperties.getSpellCorrection();
+        return "v2:" + r.getTitleBoost() + ":" + r.getHeadingsBoost() + ":" + r.getMetaDescriptionBoost()
                 + ":" + r.getBodyBoost() + ":" + r.getPhraseBoost() + ":" + r.getTitlePhraseBoost()
                 + ":" + f.isEnabled() + ":" + f.getFuzziness()
-                + ":" + h.isEnabled() + ":" + h.getFragmentSize() + ":" + h.getNumberOfFragments();
+                + ":" + h.isEnabled() + ":" + h.getFragmentSize() + ":" + h.getNumberOfFragments()
+                + ":" + syn.isEnabled() + ":" + syn.getMaximumSynonymsPerTerm() + ":" + (syn.getRules() != null ? syn.getRules().hashCode() : 0)
+                + ":" + sc.isEnabled() + ":" + sc.getMaximumSuggestions() + ":" + sc.getMinimumTermLength();
     }
 
     public SearchResponse get(SearchCacheKey key) {

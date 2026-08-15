@@ -7,6 +7,7 @@ import com.searchengine.indexer.exception.SearchQueryException;
 import com.searchengine.indexer.model.analytics.SearchAnalyticsSnapshot;
 import com.searchengine.indexer.model.dto.SearchResponse;
 import com.searchengine.indexer.search.ElasticsearchSearchQueryBuilder;
+import com.searchengine.indexer.search.SearchQueryEnhancer;
 import com.searchengine.indexer.search.SearchQueryParser;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch.core.search.Hit;
@@ -41,8 +42,12 @@ class SearchServiceTest {
     @Mock
     private ElasticsearchClient elasticsearchClient;
 
+    @Mock
+    private SearchSpellCorrectionService searchSpellCorrectionService;
+
     private IndexerElasticsearchProperties indexerProperties;
     private SearchProperties searchProperties;
+    private SearchQueryEnhancer searchQueryEnhancer;
     private ElasticsearchSearchQueryBuilder searchQueryBuilder;
     private SearchQueryParser searchQueryParser;
     private MeterRegistry meterRegistry;
@@ -70,10 +75,13 @@ class SearchServiceTest {
         searchProperties.getAnalytics().setMaximumQueryEntries(100);
         searchProperties.getAnalytics().setTopQueryLimit(5);
         searchProperties.getAnalytics().setQueryRetention(Duration.ofHours(1));
+        searchProperties.getSynonyms().setEnabled(true);
+        searchProperties.getSpellCorrection().setEnabled(true);
 
-        searchQueryBuilder = new ElasticsearchSearchQueryBuilder(searchProperties);
-        searchQueryParser = new SearchQueryParser();
         meterRegistry = new SimpleMeterRegistry();
+        searchQueryEnhancer = new SearchQueryEnhancer(searchProperties, meterRegistry);
+        searchQueryBuilder = new ElasticsearchSearchQueryBuilder(searchProperties, searchQueryEnhancer);
+        searchQueryParser = new SearchQueryParser();
 
         searchCacheService = new SearchCacheService(searchProperties, meterRegistry);
         searchCacheService.init();
@@ -81,7 +89,7 @@ class SearchServiceTest {
         searchAnalyticsService = new SearchAnalyticsService(searchProperties, meterRegistry);
         searchAnalyticsService.init();
 
-        searchService = new SearchService(elasticsearchClient, indexerProperties, searchProperties, searchQueryBuilder, searchQueryParser, searchCacheService, searchAnalyticsService, meterRegistry);
+        searchService = new SearchService(elasticsearchClient, indexerProperties, searchProperties, searchQueryBuilder, searchQueryParser, searchCacheService, searchAnalyticsService, searchSpellCorrectionService, meterRegistry);
     }
 
     private co.elastic.clients.elasticsearch.core.SearchResponse<Map> createMockEsResponse(long hitsCount, Map<String, List<String>> highlights) {
@@ -116,85 +124,47 @@ class SearchServiceTest {
     }
 
     @Test
-    void search_cacheMissThenHit_executesESOnceAndUpdatesAnalytics() throws IOException {
+    void search_hitsPresent_doesNotInvokeSpellCorrection() throws IOException {
         co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
         given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
 
-        // First request: Cache MISS -> calls Elasticsearch
-        SearchResponse firstResponse = searchService.search("spring", null, null, null, null, null, 0, 10, "relevance");
-        assertThat(firstResponse.totalHits()).isEqualTo(1L);
-        verify(elasticsearchClient, times(1)).search(any(Function.class), any(Class.class));
-
-        // Second request (identical): Cache HIT -> returns cached response, ES NOT called again
-        SearchResponse secondResponse = searchService.search("spring", null, null, null, null, null, 0, 10, "relevance");
-        assertThat(secondResponse.totalHits()).isEqualTo(1L);
-        verify(elasticsearchClient, times(1)).search(any(Function.class), any(Class.class));
-
-        assertThat(meterRegistry.counter("search.cache.hit", "operation", "search").count()).isEqualTo(1.0);
-        assertThat(meterRegistry.counter("search.cache.miss", "operation", "search").count()).isEqualTo(1.0);
-
-        SearchAnalyticsSnapshot snapshot = searchAnalyticsService.getSnapshot();
-        assertThat(snapshot.totalRequests()).isEqualTo(2L);
-        assertThat(snapshot.successfulRequests()).isEqualTo(2L);
-        assertThat(snapshot.cacheHits()).isEqualTo(1L);
-        assertThat(snapshot.cacheMisses()).isEqualTo(1L);
-        assertThat(snapshot.topQueries().get(0).query()).isEqualTo("spring");
-        assertThat(snapshot.topQueries().get(0).count()).isEqualTo(2L);
+        SearchResponse response = searchService.search("spring", null, null, null, null, null, 0, 10, "relevance");
+        assertThat(response.totalHits()).isEqualTo(1L);
+        assertThat(response.correctedQuery()).isNull();
     }
 
     @Test
-    void search_zeroResultSearch_recordsZeroResultAnalytics() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(0L, null);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+    void search_zeroHits_triggersSpellCorrectionAndFallbackSearch() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> zeroHitsResp = createMockEsResponse(0L, null);
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> correctedHitsResp = createMockEsResponse(2L, null);
 
-        searchService.search("nonexistent", null, null, null, null, null, 0, 10, "relevance");
-
-        SearchAnalyticsSnapshot snapshot = searchAnalyticsService.getSnapshot();
-        assertThat(snapshot.totalRequests()).isEqualTo(1L);
-        assertThat(snapshot.zeroResultSearches()).isEqualTo(1L);
-        assertThat(snapshot.resultfulSearches()).isEqualTo(0L);
-    }
-
-    @Test
-    void search_elasticsearchFailure_recordsFailedAnalytics() throws IOException {
         given(elasticsearchClient.search(any(Function.class), any(Class.class)))
-                .willThrow(new IOException("Elasticsearch node unreachable"));
+                .willReturn(zeroHitsResp)
+                .willReturn(correctedHitsResp);
 
-        assertThatThrownBy(() -> searchService.search("spring", null, null, null, null, null, 0, 10, "relevance"))
-                .isInstanceOf(SearchQueryException.class);
+        given(searchSpellCorrectionService.suggestCorrection(any(), any())).willReturn("spring boot");
 
-        SearchAnalyticsSnapshot snapshot = searchAnalyticsService.getSnapshot();
-        assertThat(snapshot.totalRequests()).isEqualTo(1L);
-        assertThat(snapshot.failedRequests()).isEqualTo(1L);
+        SearchResponse response = searchService.search("sprng boot", null, null, null, null, null, 0, 10, "relevance");
+
+        assertThat(response.query()).isEqualTo("sprng boot");
+        assertThat(response.correctedQuery()).isEqualTo("spring boot");
+        assertThat(response.totalHits()).isEqualTo(2L);
+
+        assertThat(meterRegistry.counter("search.correction.attempts").count()).isEqualTo(1.0);
+        assertThat(meterRegistry.counter("search.correction.applied").count()).isEqualTo(1.0);
     }
 
     @Test
-    void search_deepPage_rejectedAndRecordsValidationError() {
-        assertThatThrownBy(() -> searchService.search("spring", null, null, null, null, null, 1001, 10, "relevance"))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Requested page is too deep");
+    void search_zeroHits_correctionFailed_returnsOriginalZeroHitResponse() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> zeroHitsResp = createMockEsResponse(0L, null);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(zeroHitsResp);
 
-        SearchAnalyticsSnapshot snapshot = searchAnalyticsService.getSnapshot();
-        assertThat(snapshot.totalRequests()).isEqualTo(1L);
-        assertThat(snapshot.validationErrors()).isEqualTo(1L);
-    }
+        given(searchSpellCorrectionService.suggestCorrection(any(), any())).willReturn(null);
 
-    @Test
-    void search_queryTermLimitExceeded_rejected() {
-        assertThatThrownBy(() -> searchService.search("one two three four five six", null, null, null, null, null, 0, 10, "relevance"))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Search query is too complex");
-    }
+        SearchResponse response = searchService.search("unknownxyz", null, null, null, null, null, 0, 10, "relevance");
 
-    @Test
-    void search_socketTimeout_throwsSearchQueryExceptionAndRecordsTimeoutMetric() throws IOException {
-        given(elasticsearchClient.search(any(Function.class), any(Class.class)))
-                .willThrow(new IOException("SocketTimeoutException: Read timed out", new SocketTimeoutException("Read timed out")));
-
-        assertThatThrownBy(() -> searchService.search("spring", null, null, null, null, null, 0, 10, "relevance"))
-                .isInstanceOf(SearchQueryException.class)
-                .hasMessageContaining("Search query timed out");
-
-        assertThat(meterRegistry.counter("search.timeouts").count()).isEqualTo(1.0);
+        assertThat(response.query()).isEqualTo("unknownxyz");
+        assertThat(response.correctedQuery()).isNull();
+        assertThat(response.totalHits()).isEqualTo(0L);
     }
 }

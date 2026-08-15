@@ -7,6 +7,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.util.List;
 
 @Getter
 @Setter
@@ -25,6 +26,8 @@ public class SearchProperties {
 
     private Cache cache = new Cache();
     private Analytics analytics = new Analytics();
+    private Synonyms synonyms = new Synonyms();
+    private SpellCorrection spellCorrection = new SpellCorrection();
     private Relevance relevance = new Relevance();
     private Fuzzy fuzzy = new Fuzzy();
     private Highlight highlight = new Highlight();
@@ -45,6 +48,26 @@ public class SearchProperties {
         private long maximumQueryEntries = 5000;
         private int topQueryLimit = 20;
         private Duration queryRetention = Duration.ofHours(1);
+    }
+
+    @Getter
+    @Setter
+    public static class Synonyms {
+        private boolean enabled = true;
+        private int maximumSynonymsPerTerm = 5;
+        private List<String> rules = List.of(
+                "java, jdk",
+                "js, javascript",
+                "spring boot, springboot"
+        );
+    }
+
+    @Getter
+    @Setter
+    public static class SpellCorrection {
+        private boolean enabled = true;
+        private int maximumSuggestions = 3;
+        private int minimumTermLength = 3;
     }
 
     @Getter
@@ -117,6 +140,34 @@ public class SearchProperties {
             }
             if (analytics.getQueryRetention() == null || analytics.getQueryRetention().isNegative() || analytics.getQueryRetention().isZero()) {
                 throw new IllegalStateException("Analytics query-retention must be greater than 0");
+            }
+        }
+        if (synonyms.isEnabled()) {
+            if (synonyms.getMaximumSynonymsPerTerm() <= 0) {
+                throw new IllegalStateException("Maximum synonyms per term must be greater than 0");
+            }
+            if (synonyms.getRules() == null || synonyms.getRules().isEmpty()) {
+                throw new IllegalStateException("Synonym rules list must not be empty when synonyms are enabled");
+            }
+            if (synonyms.getRules().size() > 500) {
+                throw new IllegalStateException("Synonym rules count exceeds maximum allowed limit");
+            }
+            for (String rule : synonyms.getRules()) {
+                if (rule == null || rule.isBlank()) {
+                    throw new IllegalStateException("Synonym rule must not be null or blank");
+                }
+                String[] parts = rule.split(",");
+                if (parts.length < 2) {
+                    throw new IllegalStateException("Malformed synonym rule: " + rule);
+                }
+            }
+        }
+        if (spellCorrection.isEnabled()) {
+            if (spellCorrection.getMaximumSuggestions() <= 0) {
+                throw new IllegalStateException("Maximum spell suggestions must be greater than 0");
+            }
+            if (spellCorrection.getMinimumTermLength() < 1) {
+                throw new IllegalStateException("Minimum term length for spell correction must be greater than or equal to 1");
             }
         }
         if (relevance.getTitleBoost() <= 0) {

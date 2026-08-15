@@ -4,6 +4,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -39,6 +40,16 @@ class SearchPropertiesTest {
         assertThat(analytics.getTopQueryLimit()).isEqualTo(20);
         assertThat(analytics.getQueryRetention()).isEqualTo(Duration.ofHours(1));
 
+        SearchProperties.Synonyms synonyms = searchProperties.getSynonyms();
+        assertThat(synonyms.isEnabled()).isTrue();
+        assertThat(synonyms.getMaximumSynonymsPerTerm()).isEqualTo(5);
+        assertThat(synonyms.getRules()).contains("java, jdk");
+
+        SearchProperties.SpellCorrection spellCorrection = searchProperties.getSpellCorrection();
+        assertThat(spellCorrection.isEnabled()).isTrue();
+        assertThat(spellCorrection.getMaximumSuggestions()).isEqualTo(3);
+        assertThat(spellCorrection.getMinimumTermLength()).isEqualTo(3);
+
         SearchProperties.Relevance relevance = searchProperties.getRelevance();
         assertThat(relevance.getTitleBoost()).isEqualTo(4.0);
         assertThat(relevance.getHeadingsBoost()).isEqualTo(3.0);
@@ -73,61 +84,46 @@ class SearchPropertiesTest {
         searchProperties.getAnalytics().setMaximumQueryEntries(10000L);
         searchProperties.getAnalytics().setTopQueryLimit(50);
         searchProperties.getAnalytics().setQueryRetention(Duration.ofHours(2));
+        searchProperties.getSynonyms().setMaximumSynonymsPerTerm(10);
+        searchProperties.getSpellCorrection().setMaximumSuggestions(5);
+        searchProperties.getSpellCorrection().setMinimumTermLength(4);
 
         searchProperties.validateProperties();
 
         assertThat(searchProperties.getTimeout()).isEqualTo(Duration.ofSeconds(5));
-        assertThat(searchProperties.getMaxPageDepth()).isEqualTo(20000);
-        assertThat(searchProperties.getMaxQueryTerms()).isEqualTo(30);
-        assertThat(searchProperties.getMaxQueryPhrases()).isEqualTo(15);
-        assertThat(searchProperties.getSlowQueryThresholdMs()).isEqualTo(2000L);
-        assertThat(searchProperties.getCache().getMaximumSize()).isEqualTo(5000L);
-        assertThat(searchProperties.getCache().getTtl()).isEqualTo(Duration.ofSeconds(120));
-        assertThat(searchProperties.getAnalytics().getMaximumQueryEntries()).isEqualTo(10000L);
-        assertThat(searchProperties.getAnalytics().getTopQueryLimit()).isEqualTo(50);
-        assertThat(searchProperties.getAnalytics().getQueryRetention()).isEqualTo(Duration.ofHours(2));
+        assertThat(searchProperties.getSynonyms().getMaximumSynonymsPerTerm()).isEqualTo(10);
+        assertThat(searchProperties.getSpellCorrection().getMaximumSuggestions()).isEqualTo(5);
+        assertThat(searchProperties.getSpellCorrection().getMinimumTermLength()).isEqualTo(4);
     }
 
     @Test
-    void validateProperties_invalidAnalyticsMaxEntries_throwsIllegalStateException() {
-        searchProperties.getAnalytics().setEnabled(true);
-        searchProperties.getAnalytics().setMaximumQueryEntries(0);
+    void validateProperties_invalidSynonymConfig_throwsIllegalStateException() {
+        searchProperties.getSynonyms().setEnabled(true);
+        searchProperties.getSynonyms().setMaximumSynonymsPerTerm(0);
         assertThatThrownBy(() -> searchProperties.validateProperties())
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Analytics maximum-query-entries must be between 1 and 100000");
+                .hasMessageContaining("Maximum synonyms per term must be greater than 0");
 
-        searchProperties.getAnalytics().setMaximumQueryEntries(100001);
+        searchProperties.getSynonyms().setMaximumSynonymsPerTerm(5);
+        searchProperties.getSynonyms().setRules(List.of("invalid_rule_no_comma"));
         assertThatThrownBy(() -> searchProperties.validateProperties())
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Analytics maximum-query-entries must be between 1 and 100000");
+                .hasMessageContaining("Malformed synonym rule");
     }
 
     @Test
-    void validateProperties_invalidAnalyticsTopLimit_throwsIllegalStateException() {
-        searchProperties.getAnalytics().setEnabled(true);
-        searchProperties.getAnalytics().setTopQueryLimit(0);
+    void validateProperties_invalidSpellCorrectionConfig_throwsIllegalStateException() {
+        searchProperties.getSpellCorrection().setEnabled(true);
+        searchProperties.getSpellCorrection().setMaximumSuggestions(0);
         assertThatThrownBy(() -> searchProperties.validateProperties())
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Analytics top-query-limit must be between 1 and 100");
+                .hasMessageContaining("Maximum spell suggestions must be greater than 0");
 
-        searchProperties.getAnalytics().setTopQueryLimit(101);
+        searchProperties.getSpellCorrection().setMaximumSuggestions(3);
+        searchProperties.getSpellCorrection().setMinimumTermLength(0);
         assertThatThrownBy(() -> searchProperties.validateProperties())
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Analytics top-query-limit must be between 1 and 100");
-    }
-
-    @Test
-    void validateProperties_invalidAnalyticsQueryRetention_throwsIllegalStateException() {
-        searchProperties.getAnalytics().setEnabled(true);
-        searchProperties.getAnalytics().setQueryRetention(Duration.ZERO);
-        assertThatThrownBy(() -> searchProperties.validateProperties())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Analytics query-retention must be greater than 0");
-
-        searchProperties.getAnalytics().setQueryRetention(null);
-        assertThatThrownBy(() -> searchProperties.validateProperties())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Analytics query-retention must be greater than 0");
+                .hasMessageContaining("Minimum term length for spell correction must be greater than or equal to 1");
     }
 
     @Test

@@ -47,6 +47,17 @@ indexer:
       maximum-query-entries: ${SEARCH_ANALYTICS_MAXIMUM_QUERY_ENTRIES:5000}
       top-query-limit: ${SEARCH_ANALYTICS_TOP_QUERY_LIMIT:20}
       query-retention: ${SEARCH_ANALYTICS_QUERY_RETENTION:1h}
+    synonyms:
+      enabled: ${SEARCH_SYNONYMS_ENABLED:true}
+      maximum-synonyms-per-term: ${SEARCH_MAX_SYNONYMS_PER_TERM:5}
+      rules:
+        - "java, jdk"
+        - "js, javascript"
+        - "spring boot, springboot"
+    spell-correction:
+      enabled: ${SEARCH_SPELL_CORRECTION_ENABLED:true}
+      maximum-suggestions: ${SEARCH_MAX_SPELL_SUGGESTIONS:3}
+      minimum-term-length: ${SEARCH_SPELL_MIN_TERM_LENGTH:3}
     relevance:
       title-boost: ${SEARCH_TITLE_BOOST:4.0}
       headings-boost: ${SEARCH_HEADINGS_BOOST:3.0}

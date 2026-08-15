@@ -62,6 +62,7 @@ class SearchControllerTest {
         mockMvc.perform(get("/api/search").param("q", "spring"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.query").value("spring"))
+                .andExpect(jsonPath("$.correctedQuery").isEmpty())
                 .andExpect(jsonPath("$.totalHits").value(1))
                 .andExpect(jsonPath("$.page").value(0))
                 .andExpect(jsonPath("$.size").value(10))
@@ -76,6 +77,18 @@ class SearchControllerTest {
                 .andExpect(jsonPath("$.results[0].wordCount").value(450))
                 .andExpect(jsonPath("$.results[0].statusCode").value(200))
                 .andExpect(jsonPath("$.results[0].highlights.title[0]").value("<em>Spring Framework</em>"));
+    }
+
+    @Test
+    void search_withCorrectedQuery_returns200AndCorrectedQueryInJson() throws Exception {
+        SearchResponse response = new SearchResponse("sprng boot", "spring boot", 5L, 0, 10, 1, "relevance", List.of());
+        given(searchService.search("sprng boot", null, null, null, null, null, 0, 10, "relevance")).willReturn(response);
+
+        mockMvc.perform(get("/api/search").param("q", "sprng boot"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.query").value("sprng boot"))
+                .andExpect(jsonPath("$.correctedQuery").value("spring boot"))
+                .andExpect(jsonPath("$.totalHits").value(5));
     }
 
     @Test

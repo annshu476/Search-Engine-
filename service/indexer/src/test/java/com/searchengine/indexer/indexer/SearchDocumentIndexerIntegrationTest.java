@@ -46,7 +46,12 @@ class SearchDocumentIndexerIntegrationTest {
     private SearchAnalyticsService searchAnalyticsService;
 
     @Test
-    void endToEndElasticsearchIndexingPaginationRelevanceFuzzyHighlightingSuggestionsFiltersPhraseMatchingAdvancedQuerySyntaxCachingAndAnalytics() throws Exception {
+    void endToEndElasticsearchIndexingPaginationRelevanceFuzzyHighlightingSuggestionsFiltersPhraseMatchingAdvancedQuerySyntaxCachingAnalyticsSynonymsAndSpellCorrection() throws Exception {
+        // 0. Clean index for deterministic integration test runs
+        if (elasticsearchClient.indices().exists(e -> e.index("search-documents")).value()) {
+            elasticsearchClient.indices().delete(d -> d.index("search-documents"));
+        }
+
         // 1. Verify index created by initializer
         indexInitializer.initializeIndex();
         boolean indexExists = elasticsearchClient.indices().exists(e -> e.index("search-documents")).value();
@@ -306,5 +311,17 @@ class SearchDocumentIndexerIntegrationTest {
 
         ZeroResultsResponse zeroResultsResponse = searchAnalyticsService.getZeroResults();
         assertThat(zeroResultsResponse.queries()).extracting("query").contains("NonExistentKeywordXYZ999");
+
+        // 14. Test Feature 16 Synonym-Aware Search
+        SearchDocument synDoc = new SearchDocument(
+                "https://searchengine.org/syn1", "https://searchengine.org/syn1", "hash-syn-1",
+                "Java Development Kit Guide", "Guide to Java JDK tools", List.of("Java"),
+                "Body content about Java Development Kit", "en", 100, 200, "text/html", now, now
+        );
+        searchDocumentIndexer.index(synDoc);
+        elasticsearchClient.indices().refresh(r -> r.index("search-documents"));
+
+        SearchResponse jdkSynResp = searchService.search("jdk", 0, 10, "relevance");
+        assertThat(jdkSynResp.results()).extracting("urlHash").contains("hash-syn-1");
     }
 }

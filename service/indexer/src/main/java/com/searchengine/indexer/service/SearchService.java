@@ -45,6 +45,7 @@ public class SearchService {
     private final SearchQueryParser searchQueryParser;
     private final SearchCacheService searchCacheService;
     private final SearchAnalyticsService searchAnalyticsService;
+    private final SearchSpellCorrectionService searchSpellCorrectionService;
     private final MeterRegistry meterRegistry;
 
     public SearchResponse search(String query) {
@@ -173,34 +174,7 @@ public class SearchService {
                 long totalHits = esResponse.hits().total() != null ? esResponse.hits().total().value() : 0L;
                 int totalPages = size > 0 ? (int) Math.ceil((double) totalHits / size) : 0;
 
-                List<SearchResult> results = new ArrayList<>();
-                if (esResponse.hits().hits() != null) {
-                    for (Hit<Map> hit : esResponse.hits().hits()) {
-                        Map source = hit.source();
-                        if (source != null) {
-                            String url = (String) source.get("url");
-                            String canonicalUrl = (String) source.get("canonicalUrl");
-                            String urlHash = (String) source.get("urlHash");
-                            String title = (String) source.get("title");
-                            String metaDescription = (String) source.get("metaDescription");
-                            String docLanguage = (String) source.get("language");
-                            Integer wordCount = source.get("wordCount") != null ? ((Number) source.get("wordCount")).intValue() : null;
-                            Integer docStatusCode = source.get("statusCode") != null ? ((Number) source.get("statusCode")).intValue() : null;
-
-                            Map<String, List<String>> highlightsMap = new HashMap<>();
-                            Map<String, List<String>> esHighlights = hit.highlight();
-                            if (esHighlights != null && !esHighlights.isEmpty()) {
-                                for (Map.Entry<String, List<String>> entry : esHighlights.entrySet()) {
-                                    if (entry.getValue() != null && !entry.getValue().isEmpty()) {
-                                        highlightsMap.put(entry.getKey(), entry.getValue());
-                                    }
-                                }
-                            }
-
-                            results.add(new SearchResult(url, canonicalUrl, urlHash, title, metaDescription, docLanguage, wordCount, docStatusCode, highlightsMap));
-                        }
-                    }
-                }
+                List<SearchResult> results = extractResults(esResponse);
 
                 meterRegistry.counter("search.success").increment();
                 searchAnalyticsService.recordSuccess(trimmedQuery, totalHits, durationMs);
@@ -208,6 +182,62 @@ public class SearchService {
                         query, page, size, normalizedSort, totalHits, totalPages, results.size(), durationMs);
 
                 SearchResponse searchResponse = new SearchResponse(query, totalHits, page, size, totalPages, normalizedSort, results);
+
+                if (totalHits == 0 && searchProperties.getSpellCorrection().isEnabled()) {
+                    try {
+                        String suggestedQuery = searchSpellCorrectionService.suggestCorrection(trimmedQuery, parsedQuery);
+                        if (suggestedQuery != null && !suggestedQuery.equalsIgnoreCase(trimmedQuery)) {
+                            log.info("SEARCH_QUERY_CORRECTION_ATTEMPT query=\"{}\"", trimmedQuery);
+                            meterRegistry.counter("search.correction.attempts").increment();
+
+                            ParsedSearchQuery correctedParsedQuery = searchQueryParser.parse(suggestedQuery);
+                            Query correctedEsQuery = searchQueryBuilder.buildSearchQuery(correctedParsedQuery, filter);
+
+                            co.elastic.clients.elasticsearch.core.SearchResponse<Map> correctedEsResp = elasticsearchClient.search(s -> {
+                                s.index(indexName)
+                                        .from(from)
+                                        .size(size)
+                                        .source(src -> src.filter(f -> f.includes(SOURCE_INCLUDES)))
+                                        .timeout(searchProperties.getTimeout().toMillis() + "ms")
+                                        .query(correctedEsQuery);
+
+                                if (highlightConfig != null) {
+                                    s.highlight(highlightConfig);
+                                }
+
+                                if ("newest".equals(normalizedSort)) {
+                                    s.sort(so -> so.field(f -> f.field("indexedAt").order(SortOrder.Desc)))
+                                     .sort(so -> so.field(f -> f.field("urlHash").order(SortOrder.Asc)));
+                                } else {
+                                    s.sort(so -> so.score(sc -> sc.order(SortOrder.Desc)));
+                                }
+
+                                return s;
+                            }, Map.class);
+
+                            long correctedTotalHits = correctedEsResp.hits().total() != null ? correctedEsResp.hits().total().value() : 0L;
+                            if (correctedTotalHits > 0) {
+                                int correctedTotalPages = size > 0 ? (int) Math.ceil((double) correctedTotalHits / size) : 0;
+                                List<SearchResult> correctedResults = extractResults(correctedEsResp);
+
+                                log.info("SEARCH_QUERY_CORRECTED original=\"{}\" corrected=\"{}\"", trimmedQuery, suggestedQuery);
+                                meterRegistry.counter("search.correction.applied").increment();
+
+                                SearchResponse responseWithCorrection = new SearchResponse(
+                                        query, suggestedQuery, correctedTotalHits, page, size, correctedTotalPages, normalizedSort, correctedResults
+                                );
+                                searchCacheService.put(cacheKey, responseWithCorrection);
+                                return responseWithCorrection;
+                            } else {
+                                log.info("SEARCH_QUERY_CORRECTION_NONE query=\"{}\"", trimmedQuery);
+                                meterRegistry.counter("search.correction.failed").increment();
+                            }
+                        }
+                    } catch (Exception e) {
+                        log.warn("SEARCH_QUERY_CORRECTION_FAILED query=\"{}\" error={}", trimmedQuery, e.getMessage());
+                    }
+                }
+
                 searchCacheService.put(cacheKey, searchResponse);
 
                 return searchResponse;
@@ -229,6 +259,38 @@ public class SearchService {
         } catch (RuntimeException e) {
             throw e;
         }
+    }
+
+    private List<SearchResult> extractResults(co.elastic.clients.elasticsearch.core.SearchResponse<Map> esResponse) {
+        List<SearchResult> results = new ArrayList<>();
+        if (esResponse.hits().hits() != null) {
+            for (Hit<Map> hit : esResponse.hits().hits()) {
+                Map source = hit.source();
+                if (source != null) {
+                    String url = (String) source.get("url");
+                    String canonicalUrl = (String) source.get("canonicalUrl");
+                    String urlHash = (String) source.get("urlHash");
+                    String title = (String) source.get("title");
+                    String metaDescription = (String) source.get("metaDescription");
+                    String docLanguage = (String) source.get("language");
+                    Integer wordCount = source.get("wordCount") != null ? ((Number) source.get("wordCount")).intValue() : null;
+                    Integer docStatusCode = source.get("statusCode") != null ? ((Number) source.get("statusCode")).intValue() : null;
+
+                    Map<String, List<String>> highlightsMap = new HashMap<>();
+                    Map<String, List<String>> esHighlights = hit.highlight();
+                    if (esHighlights != null && !esHighlights.isEmpty()) {
+                        for (Map.Entry<String, List<String>> entry : esHighlights.entrySet()) {
+                            if (entry.getValue() != null && !entry.getValue().isEmpty()) {
+                                highlightsMap.put(entry.getKey(), entry.getValue());
+                            }
+                        }
+                    }
+
+                    results.add(new SearchResult(url, canonicalUrl, urlHash, title, metaDescription, docLanguage, wordCount, docStatusCode, highlightsMap));
+                }
+            }
+        }
+        return results;
     }
 
     private void recordValidationError() {

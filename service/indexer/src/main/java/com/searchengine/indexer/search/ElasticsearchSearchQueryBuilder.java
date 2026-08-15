@@ -19,6 +19,7 @@ import java.util.Map;
 public class ElasticsearchSearchQueryBuilder {
 
     private final SearchProperties searchProperties;
+    private final SearchQueryEnhancer searchQueryEnhancer;
 
     public Query buildMultiMatchQuery(String queryText) {
         SearchProperties.Relevance relevance = searchProperties.getRelevance();
@@ -113,10 +114,24 @@ public class ElasticsearchSearchQueryBuilder {
         List<Query> filterQueries = new ArrayList<>();
         List<Query> mustNotQueries = new ArrayList<>();
 
+        Map<String, List<String>> synonymsMap = searchQueryEnhancer != null ? searchQueryEnhancer.getSynonymsForTerms(parsedQuery) : Map.of();
+
         if (parsedQuery.isSimpleNormalQuery()) {
-            String queryText = !parsedQuery.normalTerms().isEmpty()
-                    ? String.join(" ", parsedQuery.normalTerms())
-                    : String.join(" ", parsedQuery.exactPhrases());
+            List<String> baseTerms = !parsedQuery.normalTerms().isEmpty() ? new ArrayList<>(parsedQuery.normalTerms()) : new ArrayList<>(parsedQuery.exactPhrases());
+            List<String> expandedTerms = new ArrayList<>(baseTerms);
+
+            for (String term : baseTerms) {
+                List<String> syns = synonymsMap.get(term);
+                if (syns != null) {
+                    for (String syn : syns) {
+                        if (!expandedTerms.contains(syn)) {
+                            expandedTerms.add(syn);
+                        }
+                    }
+                }
+            }
+
+            String queryText = String.join(" ", expandedTerms);
             Query relevanceQuery = buildRelevanceQuery(queryText);
             mustQueries.add(relevanceQuery);
         } else {
@@ -126,13 +141,34 @@ public class ElasticsearchSearchQueryBuilder {
             positiveTerms.addAll(parsedQuery.requiredTerms());
             positiveTerms.addAll(parsedQuery.requiredPhrases());
 
+            for (String term : new ArrayList<>(positiveTerms)) {
+                List<String> syns = synonymsMap.get(term);
+                if (syns != null) {
+                    for (String syn : syns) {
+                        if (!positiveTerms.contains(syn)) {
+                            positiveTerms.add(syn);
+                        }
+                    }
+                }
+            }
+
             if (!positiveTerms.isEmpty()) {
                 String fullPositiveText = String.join(" ", positiveTerms);
                 mustQueries.add(buildRelevanceQuery(fullPositiveText));
             }
 
             for (String reqTerm : parsedQuery.requiredTerms()) {
-                mustQueries.add(buildMultiMatchQuery(reqTerm));
+                List<String> syns = synonymsMap.get(reqTerm);
+                if (syns != null && !syns.isEmpty()) {
+                    List<Query> synShoulds = new ArrayList<>();
+                    synShoulds.add(buildMultiMatchQuery(reqTerm));
+                    for (String syn : syns) {
+                        synShoulds.add(buildMultiMatchQuery(syn));
+                    }
+                    mustQueries.add(Query.of(q -> q.bool(b -> b.should(synShoulds).minimumShouldMatch("1"))));
+                } else {
+                    mustQueries.add(buildMultiMatchQuery(reqTerm));
+                }
             }
 
             for (String reqPhrase : parsedQuery.requiredPhrases()) {

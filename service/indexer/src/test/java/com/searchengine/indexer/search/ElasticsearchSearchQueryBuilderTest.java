@@ -8,6 +8,8 @@ import co.elastic.clients.elasticsearch._types.query_dsl.MultiMatchQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch._types.query_dsl.TextQueryType;
 import co.elastic.clients.elasticsearch.core.search.Highlight;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -19,13 +21,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ElasticsearchSearchQueryBuilderTest {
 
     private SearchProperties searchProperties;
+    private SearchQueryEnhancer queryEnhancer;
     private ElasticsearchSearchQueryBuilder queryBuilder;
     private SearchQueryParser searchQueryParser;
+    private MeterRegistry meterRegistry;
 
     @BeforeEach
     void setUp() {
         searchProperties = new SearchProperties();
-        queryBuilder = new ElasticsearchSearchQueryBuilder(searchProperties);
+        searchProperties.getSynonyms().setEnabled(false); // disable for base query builder tests
+        meterRegistry = new SimpleMeterRegistry();
+        queryEnhancer = new SearchQueryEnhancer(searchProperties, meterRegistry);
+        queryBuilder = new ElasticsearchSearchQueryBuilder(searchProperties, queryEnhancer);
         searchQueryParser = new SearchQueryParser();
     }
 
@@ -141,6 +148,23 @@ class ElasticsearchSearchQueryBuilderTest {
         assertThat(bool.mustNot()).hasSize(1);
         assertThat(bool.mustNot().get(0).isMultiMatch()).isTrue();
         assertThat(bool.mustNot().get(0).multiMatch().query()).isEqualTo("xml");
+    }
+
+    @Test
+    void buildSearchQuery_synonymExpansion_includesSynonymInPositiveQuery() {
+        searchProperties.getSynonyms().setEnabled(true);
+        searchProperties.getSynonyms().setRules(List.of("java, jdk"));
+
+        ParsedSearchQuery parsed = searchQueryParser.parse("java spring");
+        SearchFilter filter = new SearchFilter(null, null, null, null, null);
+
+        Query query = queryBuilder.buildSearchQuery(parsed, filter);
+
+        assertThat(query.isBool()).isTrue();
+        BoolQuery bool = query.bool();
+
+        // Must contains baseline relevance query with 'java spring jdk'
+        assertThat(bool.should().get(0).multiMatch().query()).contains("java", "spring", "jdk");
     }
 
     @Test
