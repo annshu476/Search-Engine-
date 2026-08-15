@@ -6,6 +6,8 @@ import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
+
 @Getter
 @Setter
 @Component
@@ -15,6 +17,11 @@ public class SearchProperties {
     private int maxResults = 10;
     private int maxPageSize = 50;
     private int maxQueryLength = 200;
+    private Duration timeout = Duration.ofSeconds(3);
+    private int maxPageDepth = 10000;
+    private int maxQueryTerms = 20;
+    private int maxQueryPhrases = 10;
+    private long slowQueryThresholdMs = 1000;
 
     private Relevance relevance = new Relevance();
     private Fuzzy fuzzy = new Fuzzy();
@@ -59,6 +66,21 @@ public class SearchProperties {
 
     @PostConstruct
     public void validateProperties() {
+        if (timeout == null || timeout.isNegative() || timeout.isZero()) {
+            throw new IllegalStateException("Search timeout must be greater than 0");
+        }
+        if (maxPageDepth <= 0) {
+            throw new IllegalStateException("Max page depth must be greater than 0");
+        }
+        if (maxQueryTerms <= 0) {
+            throw new IllegalStateException("Max query terms must be greater than 0");
+        }
+        if (maxQueryPhrases <= 0) {
+            throw new IllegalStateException("Max query phrases must be greater than 0");
+        }
+        if (slowQueryThresholdMs <= 0) {
+            throw new IllegalStateException("Slow query threshold must be greater than 0");
+        }
         if (relevance.getTitleBoost() <= 0) {
             throw new IllegalStateException("Title boost must be greater than 0");
         }

@@ -14,6 +14,8 @@ import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch.core.search.Highlight;
 import co.elastic.clients.elasticsearch.core.search.Hit;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -24,6 +26,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
@@ -35,6 +38,7 @@ public class SearchService {
     private final SearchProperties searchProperties;
     private final ElasticsearchSearchQueryBuilder searchQueryBuilder;
     private final SearchQueryParser searchQueryParser;
+    private final MeterRegistry meterRegistry;
 
     public SearchResponse search(String query) {
         return search(query, 0, searchProperties.getMaxResults(), "relevance");
@@ -45,113 +49,166 @@ public class SearchService {
     }
 
     public SearchResponse search(String query, String language, String contentType, Integer statusCode, String fromDate, String toDate, int page, int size, String sort) {
-        if (query == null || query.isBlank()) {
-            throw new IllegalArgumentException("Search query must not be blank");
-        }
-
-        String trimmedQuery = query.trim();
-        if (trimmedQuery.length() > searchProperties.getMaxQueryLength()) {
-            throw new IllegalArgumentException("Search query exceeds maximum allowed length");
-        }
-
-        ParsedSearchQuery parsedQuery = searchQueryParser.parse(trimmedQuery);
-
-        String validatedLanguage = validateLanguage(language);
-        String validatedContentType = validateContentType(contentType);
-        Integer validatedStatusCode = validateStatusCode(statusCode);
-        Instant parsedFromDate = parseDate(fromDate, "fromDate");
-        Instant parsedToDate = parseDate(toDate, "toDate");
-
-        if (parsedFromDate != null && parsedToDate != null && parsedFromDate.isAfter(parsedToDate)) {
-            throw new IllegalArgumentException("fromDate must not be after toDate");
-        }
-
-        if (page < 0) {
-            throw new IllegalArgumentException("Page must be greater than or equal to 0");
-        }
-
-        if (size < 1 || size > searchProperties.getMaxPageSize()) {
-            throw new IllegalArgumentException("Page size must be between 1 and " + searchProperties.getMaxPageSize());
-        }
-
-        String normalizedSort = (sort == null || sort.isBlank()) ? "relevance" : sort.trim().toLowerCase();
-        if (!normalizedSort.equals("relevance") && !normalizedSort.equals("newest")) {
-            throw new IllegalArgumentException("Unsupported sort option: " + sort);
-        }
-
-        long fromOffset = (long) page * size;
-        if (fromOffset < 0 || fromOffset > Integer.MAX_VALUE) {
-            throw new IllegalArgumentException("Invalid page and size offset combination");
-        }
-        int from = (int) fromOffset;
-
-        SearchFilter filter = new SearchFilter(validatedLanguage, validatedContentType, validatedStatusCode, parsedFromDate, parsedToDate);
-        String indexName = indexerElasticsearchProperties.getIndexName();
-        Query esQuery = searchQueryBuilder.buildSearchQuery(parsedQuery, filter);
-        Highlight highlightConfig = searchQueryBuilder.buildHighlight();
+        meterRegistry.counter("search.requests").increment();
 
         try {
-            co.elastic.clients.elasticsearch.core.SearchResponse<Map> esResponse = elasticsearchClient.search(s -> {
-                s.index(indexName)
-                        .from(from)
-                        .size(size)
-                        .query(esQuery);
+            if (query == null || query.isBlank()) {
+                recordValidationError();
+                throw new IllegalArgumentException("Search query must not be blank");
+            }
 
-                if (highlightConfig != null) {
-                    s.highlight(highlightConfig);
+            String trimmedQuery = query.trim();
+            if (trimmedQuery.length() > searchProperties.getMaxQueryLength()) {
+                recordValidationError();
+                throw new IllegalArgumentException("Search query exceeds maximum allowed length");
+            }
+
+            ParsedSearchQuery parsedQuery = searchQueryParser.parse(trimmedQuery);
+
+            int totalTerms = parsedQuery.normalTerms().size() + parsedQuery.requiredTerms().size() + parsedQuery.excludedTerms().size();
+            int totalPhrases = parsedQuery.exactPhrases().size() + parsedQuery.requiredPhrases().size() + parsedQuery.excludedPhrases().size();
+
+            if (totalTerms > searchProperties.getMaxQueryTerms() || totalPhrases > searchProperties.getMaxQueryPhrases()) {
+                recordValidationError();
+                throw new IllegalArgumentException("Search query is too complex");
+            }
+
+            String validatedLanguage = validateLanguage(language);
+            String validatedContentType = validateContentType(contentType);
+            Integer validatedStatusCode = validateStatusCode(statusCode);
+            Instant parsedFromDate = parseDate(fromDate, "fromDate");
+            Instant parsedToDate = parseDate(toDate, "toDate");
+
+            if (parsedFromDate != null && parsedToDate != null && parsedFromDate.isAfter(parsedToDate)) {
+                recordValidationError();
+                throw new IllegalArgumentException("fromDate must not be after toDate");
+            }
+
+            if (page < 0) {
+                recordValidationError();
+                throw new IllegalArgumentException("Page must be greater than or equal to 0");
+            }
+
+            if (size < 1 || size > searchProperties.getMaxPageSize()) {
+                recordValidationError();
+                throw new IllegalArgumentException("Page size must be between 1 and " + searchProperties.getMaxPageSize());
+            }
+
+            String normalizedSort = (sort == null || sort.isBlank()) ? "relevance" : sort.trim().toLowerCase();
+            if (!normalizedSort.equals("relevance") && !normalizedSort.equals("newest")) {
+                recordValidationError();
+                throw new IllegalArgumentException("Unsupported sort option: " + sort);
+            }
+
+            long fromOffset = (long) page * size;
+            if (fromOffset < 0 || fromOffset > searchProperties.getMaxPageDepth()) {
+                recordValidationError();
+                throw new IllegalArgumentException("Requested page is too deep");
+            }
+            int from = (int) fromOffset;
+
+            SearchFilter filter = new SearchFilter(validatedLanguage, validatedContentType, validatedStatusCode, parsedFromDate, parsedToDate);
+            String indexName = indexerElasticsearchProperties.getIndexName();
+            Query esQuery = searchQueryBuilder.buildSearchQuery(parsedQuery, filter);
+            Highlight highlightConfig = searchQueryBuilder.buildHighlight();
+
+            long startTime = System.currentTimeMillis();
+
+            try {
+                co.elastic.clients.elasticsearch.core.SearchResponse<Map> esResponse = elasticsearchClient.search(s -> {
+                    s.index(indexName)
+                            .from(from)
+                            .size(size)
+                            .timeout(searchProperties.getTimeout().toMillis() + "ms")
+                            .query(esQuery);
+
+                    if (highlightConfig != null) {
+                        s.highlight(highlightConfig);
+                    }
+
+                    if ("newest".equals(normalizedSort)) {
+                        s.sort(so -> so.field(f -> f.field("indexedAt").order(SortOrder.Desc)))
+                         .sort(so -> so.field(f -> f.field("urlHash").order(SortOrder.Asc)));
+                    } else {
+                        s.sort(so -> so.score(sc -> sc.order(SortOrder.Desc)));
+                    }
+
+                    return s;
+                }, Map.class);
+
+                long durationMs = System.currentTimeMillis() - startTime;
+                meterRegistry.timer("search.duration", "sort", normalizedSort).record(durationMs, TimeUnit.MILLISECONDS);
+
+                if (durationMs > searchProperties.getSlowQueryThresholdMs()) {
+                    log.warn("SLOW_SEARCH_QUERY query={} durationMs={} thresholdMs={}", query, durationMs, searchProperties.getSlowQueryThresholdMs());
                 }
 
-                if ("newest".equals(normalizedSort)) {
-                    s.sort(so -> so.field(f -> f.field("indexedAt").order(SortOrder.Desc)))
-                     .sort(so -> so.field(f -> f.field("urlHash").order(SortOrder.Asc)));
-                } else {
-                    s.sort(so -> so.score(sc -> sc.order(SortOrder.Desc)));
-                }
+                long totalHits = esResponse.hits().total() != null ? esResponse.hits().total().value() : 0L;
+                int totalPages = size > 0 ? (int) Math.ceil((double) totalHits / size) : 0;
 
-                return s;
-            }, Map.class);
+                List<SearchResult> results = new ArrayList<>();
+                if (esResponse.hits().hits() != null) {
+                    for (Hit<Map> hit : esResponse.hits().hits()) {
+                        Map source = hit.source();
+                        if (source != null) {
+                            String url = (String) source.get("url");
+                            String canonicalUrl = (String) source.get("canonicalUrl");
+                            String urlHash = (String) source.get("urlHash");
+                            String title = (String) source.get("title");
+                            String metaDescription = (String) source.get("metaDescription");
+                            String docLanguage = (String) source.get("language");
+                            Integer wordCount = source.get("wordCount") != null ? ((Number) source.get("wordCount")).intValue() : null;
+                            Integer docStatusCode = source.get("statusCode") != null ? ((Number) source.get("statusCode")).intValue() : null;
 
-            long totalHits = esResponse.hits().total() != null ? esResponse.hits().total().value() : 0L;
-            int totalPages = size > 0 ? (int) Math.ceil((double) totalHits / size) : 0;
-
-            List<SearchResult> results = new ArrayList<>();
-            if (esResponse.hits().hits() != null) {
-                for (Hit<Map> hit : esResponse.hits().hits()) {
-                    Map source = hit.source();
-                    if (source != null) {
-                        String url = (String) source.get("url");
-                        String canonicalUrl = (String) source.get("canonicalUrl");
-                        String urlHash = (String) source.get("urlHash");
-                        String title = (String) source.get("title");
-                        String metaDescription = (String) source.get("metaDescription");
-                        String docLanguage = (String) source.get("language");
-                        Integer wordCount = source.get("wordCount") != null ? ((Number) source.get("wordCount")).intValue() : null;
-                        Integer docStatusCode = source.get("statusCode") != null ? ((Number) source.get("statusCode")).intValue() : null;
-
-                        Map<String, List<String>> highlightsMap = new HashMap<>();
-                        Map<String, List<String>> esHighlights = hit.highlight();
-                        if (esHighlights != null && !esHighlights.isEmpty()) {
-                            for (Map.Entry<String, List<String>> entry : esHighlights.entrySet()) {
-                                if (entry.getValue() != null && !entry.getValue().isEmpty()) {
-                                    highlightsMap.put(entry.getKey(), entry.getValue());
+                            Map<String, List<String>> highlightsMap = new HashMap<>();
+                            Map<String, List<String>> esHighlights = hit.highlight();
+                            if (esHighlights != null && !esHighlights.isEmpty()) {
+                                for (Map.Entry<String, List<String>> entry : esHighlights.entrySet()) {
+                                    if (entry.getValue() != null && !entry.getValue().isEmpty()) {
+                                        highlightsMap.put(entry.getKey(), entry.getValue());
+                                    }
                                 }
                             }
-                        }
 
-                        results.add(new SearchResult(url, canonicalUrl, urlHash, title, metaDescription, docLanguage, wordCount, docStatusCode, highlightsMap));
+                            results.add(new SearchResult(url, canonicalUrl, urlHash, title, metaDescription, docLanguage, wordCount, docStatusCode, highlightsMap));
+                        }
                     }
+                }
+
+                meterRegistry.counter("search.success").increment();
+                log.info("SEARCH_QUERY_EXECUTED query={} page={} size={} sort={} totalHits={} totalPages={} returnedResults={} durationMs={}",
+                        query, page, size, normalizedSort, totalHits, totalPages, results.size(), durationMs);
+
+                return new SearchResponse(query, totalHits, page, size, totalPages, normalizedSort, results);
+
+            } catch (Exception e) {
+                if (isTimeoutException(e)) {
+                    meterRegistry.counter("search.timeouts").increment();
+                    meterRegistry.counter("search.errors").increment();
+                    log.error("SEARCH_QUERY_TIMEOUT query={} index={} durationMs={} error={}", query, indexName, System.currentTimeMillis() - startTime, e.getMessage());
+                    throw new SearchQueryException("Search query timed out for: " + query, e);
+                } else {
+                    meterRegistry.counter("search.errors").increment();
+                    log.error("SEARCH_QUERY_FAILED query={} index={} error={}", query, indexName, e.getMessage(), e);
+                    throw new SearchQueryException("Elasticsearch search query failed for: " + query, e);
                 }
             }
 
-            log.info("SEARCH_QUERY_EXECUTED query={} language={} contentType={} statusCode={} fromDate={} toDate={} page={} size={} sort={} fuzzyEnabled={} highlightEnabled={} totalHits={} totalPages={} returnedResults={}",
-                    query, validatedLanguage, validatedContentType, validatedStatusCode, parsedFromDate, parsedToDate, page, size, normalizedSort, searchProperties.getFuzzy().isEnabled(), searchProperties.getHighlight().isEnabled(), totalHits, totalPages, results.size());
-
-            return new SearchResponse(query, totalHits, page, size, totalPages, normalizedSort, results);
-
-        } catch (Exception e) {
-            log.error("SEARCH_QUERY_FAILED query={} index={} error={}", query, indexName, e.getMessage(), e);
-            throw new SearchQueryException("Elasticsearch search query failed for: " + query, e);
+        } catch (IllegalArgumentException e) {
+            throw e;
         }
+    }
+
+    private void recordValidationError() {
+        meterRegistry.counter("search.validation.errors").increment();
+    }
+
+    private boolean isTimeoutException(Exception e) {
+        if (e instanceof java.util.concurrent.TimeoutException || e instanceof java.net.SocketTimeoutException) {
+            return true;
+        }
+        String msg = e.getMessage();
+        return msg != null && (msg.toLowerCase().contains("timeout") || msg.toLowerCase().contains("timed out"));
     }
 
     private String validateLanguage(String language) {

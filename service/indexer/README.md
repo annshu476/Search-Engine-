@@ -1,6 +1,6 @@
 # Indexer Service
 
-The **Indexer Service** is Service 3 in the Search Engine pipeline. Its primary role is to consume processed document content from Kafka (`search-document-topic`), index the documents into Elasticsearch using explicit mappings, and expose REST Search APIs for querying indexed content with field-weighted relevance scoring, phrase matching, advanced query syntax & operators, fuzzy typo tolerance, search result highlighting, search suggestions / autocomplete, advanced search filters, pagination, and sorting support.
+The **Indexer Service** is Service 3 in the Search Engine pipeline. Its primary role is to consume processed document content from Kafka (`search-document-topic`), index the documents into Elasticsearch using explicit mappings, and expose REST Search APIs for querying indexed content with field-weighted relevance scoring, phrase matching, advanced query syntax & operators, production-hardened resilience, fuzzy typo tolerance, search result highlighting, search suggestions / autocomplete, advanced search filters, pagination, and sorting support.
 
 ---
 
@@ -130,7 +130,13 @@ Elasticsearch (search-documents)
   - **Excluded Term / Phrase**: `-xml` or `-"spring boot"` (documents containing term/phrase are eliminated via `must_not` non-scoring clause).
   - **Combined Query**: `"spring boot" +java -xml` (matches exact phrase `"spring boot"` and required term `java`, excluding `xml`).
 - Error Handling: Invalid syntax (unclosed quotes, standalone operators `+`/`-`, operator with whitespace `+ spring`, empty phrases `""`, or queries with no positive terms like `-xml`) returns HTTP 400 with `{"error": "Invalid search query syntax"}` via `SearchQuerySyntaxException`.
-- Explicitly unsupported syntax: User field targeting (`title:foo`), wildcards (`*`), regex (`.`), user fuzzy operators (`foo~1`), range operators (`>100`).
+
+### Feature 13 — Search Production Hardening
+- **Search Request Timeout**: Configurable search-level timeout (`timeout: 3s`). If Elasticsearch exceeds the search timeout or becomes unreachable, the service catches the exception and returns `HTTP 503 Service Unavailable` with `{"error": "Search service temporarily unavailable"}`. Internal details and stack traces are never exposed.
+- **Deep Pagination Protection**: Enforces a configurable maximum offset limit (`max-page-depth: 10000`). If `page * size > maxPageDepth` or integer overflow occurs (`page = Integer.MAX_VALUE`), the request is safely rejected with `HTTP 400 Bad Request` (`{"error": "Requested page is too deep"}`).
+- **Query Complexity & Term/Phrase Limits**: Enforces post-parse query term limits (`max-query-terms: 20`) and phrase limits (`max-query-phrases: 10`). If exceeded, returns `HTTP 400 Bad Request` (`{"error": "Search query is too complex"}`).
+- **Micrometer Metrics & Observability**: Tracks search metrics (`search.requests`, `search.success`, `search.errors`, `search.validation.errors`, `search.timeouts`, `search.duration`) exposed via `/actuator/prometheus`. Raw query text and high-cardinality values are strictly excluded from metric labels.
+- **Structured Timing & Slow Query Logging**: Emits concise structured timing logs (`SEARCH_QUERY_EXECUTED durationMs=...`) and warns on queries exceeding threshold (`slow-query-threshold-ms: 1000`).
 
 > [!NOTE]
 > **Intentionally NOT implemented yet**: Semantic/vector search, spell correction, synonyms, query history, or personalized recommendations.
@@ -146,7 +152,7 @@ service/indexer/src/main/java/com/searchengine/indexer/
 │   ├── ElasticsearchConfig.java                # Bean definitions for RestClient, ElasticsearchTransport, and ElasticsearchClient
 │   ├── ElasticsearchProperties.java            # Connection configuration properties prefixed with 'elasticsearch'
 │   ├── IndexerElasticsearchProperties.java     # Index configuration properties prefixed with 'indexer.elasticsearch'
-│   └── SearchProperties.java                   # Search API configuration properties
+│   └── SearchProperties.java                   # Search API configuration properties (including hardening limits)
 ├── consumer/
 │   └── SearchDocumentConsumer.java             # Kafka listener for search-document-topic using manual ACK
 ├── controller/
@@ -182,7 +188,7 @@ service/indexer/src/main/java/com/searchengine/indexer/
 │   └── SearchQueryParser.java                  # Parses raw query string into ParsedSearchQuery model
 ├── service/
 │   ├── IndexerService.java                     # Domain service orchestrating document indexing
-│   ├── SearchService.java                      # Service executing filtered search queries with advanced query syntax
+│   ├── SearchService.java                      # Service executing filtered, hardened search queries
 │   └── SearchSuggestionService.java            # Service executing prefix suggestion queries
 └── validator/
     └── SearchDocumentValidator.java            # Validates SearchDocument required fields and bounds
@@ -206,6 +212,11 @@ Default Port: `8083`
 | `indexer.search.max-results` | `10` | `SEARCH_MAX_RESULTS` | Default number of search results returned |
 | `indexer.search.max-page-size` | `50` | `SEARCH_MAX_PAGE_SIZE` | Maximum allowed page size |
 | `indexer.search.max-query-length` | `200` | `SEARCH_MAX_QUERY_LENGTH` | Maximum allowed characters in search query |
+| `indexer.search.timeout` | `3s` | `SEARCH_TIMEOUT` | Elasticsearch search request execution timeout |
+| `indexer.search.max-page-depth` | `10000` | `SEARCH_MAX_PAGE_DEPTH` | Maximum allowed Elasticsearch result offset (`page * size`) |
+| `indexer.search.max-query-terms` | `20` | `SEARCH_MAX_QUERY_TERMS` | Maximum allowed meaningful terms per query |
+| `indexer.search.max-query-phrases` | `10` | `SEARCH_MAX_QUERY_PHRASES` | Maximum allowed exact phrases per query |
+| `indexer.search.slow-query-threshold-ms` | `1000` | `SEARCH_SLOW_QUERY_THRESHOLD_MS` | Threshold in ms to log slow query warnings |
 | `indexer.search.relevance.title-boost` | `4.0` | `SEARCH_TITLE_BOOST` | Field relevance boost for document `title` |
 | `indexer.search.relevance.headings-boost` | `3.0` | `SEARCH_HEADINGS_BOOST` | Field relevance boost for document `headings` |
 | `indexer.search.relevance.meta-description-boost` | `2.0` | `SEARCH_META_DESCRIPTION_BOOST` | Field relevance boost for `metaDescription` |
@@ -222,36 +233,31 @@ Default Port: `8083`
 
 ## API Specification
 
-### Search Endpoint with Filters and Advanced Query Syntax
+### Search Endpoint with Hardening, Filters, and Advanced Query Syntax
 ```http
 GET /api/search?q={query}&language={lang}&contentType={type}&statusCode={status}&fromDate={from}&toDate={to}&page={page}&size={size}&sort={sort}
 ```
 
-#### Example Advanced Query Requests
+#### Example Production Requests
 
-1. **Exact Phrase Match**:
+1. **Standard Search**:
    ```http
-   GET /api/search?q=%22spring%20boot%22
+   GET /api/search?q=spring
    ```
 
-2. **Required Term**:
-   ```http
-   GET /api/search?q=spring%20%2Bjava
-   ```
-
-3. **Excluded Term**:
-   ```http
-   GET /api/search?q=spring%20-xml
-   ```
-
-4. **Combined Advanced Operators**:
+2. **Advanced Operators**:
    ```http
    GET /api/search?q=%22spring%20boot%22%20%2Bjava%20-xml
    ```
 
-5. **Advanced Query with Filters, Pagination, and Sorting**:
+3. **Deep Page Protection (HTTP 400)**:
    ```http
-   GET /api/search?q=%22spring%20boot%22%20%2Bjava%20-xml&language=en&contentType=text/html&statusCode=200&page=0&size=10&sort=relevance
+   GET /api/search?q=spring&page=1001&size=10
+   ```
+
+4. **Query Complexity Protection (HTTP 400)**:
+   ```http
+   GET /api/search?q=t1%20t2%20t3%20t4%20t5%20t6%20t7%20t8%20t9%20t10%20t11%20t12%20t13%20t14%20t15%20t16%20t17%20t18%20t19%20t20%20t21
    ```
 
 ---

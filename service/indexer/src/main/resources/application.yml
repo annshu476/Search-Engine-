@@ -33,6 +33,11 @@ indexer:
     max-results: ${SEARCH_MAX_RESULTS:10}
     max-page-size: ${SEARCH_MAX_PAGE_SIZE:50}
     max-query-length: ${SEARCH_MAX_QUERY_LENGTH:200}
+    timeout: ${SEARCH_TIMEOUT:3s}
+    max-page-depth: ${SEARCH_MAX_PAGE_DEPTH:10000}
+    max-query-terms: ${SEARCH_MAX_QUERY_TERMS:20}
+    max-query-phrases: ${SEARCH_MAX_QUERY_PHRASES:10}
+    slow-query-threshold-ms: ${SEARCH_SLOW_QUERY_THRESHOLD_MS:1000}
     relevance:
       title-boost: ${SEARCH_TITLE_BOOST:4.0}
       headings-boost: ${SEARCH_HEADINGS_BOOST:3.0}

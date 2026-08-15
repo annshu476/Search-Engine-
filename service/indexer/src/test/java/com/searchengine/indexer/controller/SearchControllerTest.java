@@ -89,6 +89,26 @@ class SearchControllerTest {
     }
 
     @Test
+    void search_pageTooDeep_returns400() throws Exception {
+        given(searchService.search("spring", null, null, null, null, null, 1001, 10, "relevance"))
+                .willThrow(new IllegalArgumentException("Requested page is too deep"));
+
+        mockMvc.perform(get("/api/search").param("q", "spring").param("page", "1001").param("size", "10"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("Requested page is too deep"));
+    }
+
+    @Test
+    void search_queryTooComplex_returns400() throws Exception {
+        given(searchService.search("one two three four five six", null, null, null, null, null, 0, 10, "relevance"))
+                .willThrow(new IllegalArgumentException("Search query is too complex"));
+
+        mockMvc.perform(get("/api/search").param("q", "one two three four five six"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("Search query is too complex"));
+    }
+
+    @Test
     void search_malformedSyntax_returns400() throws Exception {
         given(searchService.search("\"unclosed quote", null, null, null, null, null, 0, 10, "relevance"))
                 .willThrow(new SearchQuerySyntaxException("Invalid search query syntax"));

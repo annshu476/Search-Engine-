@@ -3,6 +3,8 @@ package com.searchengine.indexer.config;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -20,6 +22,11 @@ class SearchPropertiesTest {
         assertThat(searchProperties.getMaxResults()).isEqualTo(10);
         assertThat(searchProperties.getMaxPageSize()).isEqualTo(50);
         assertThat(searchProperties.getMaxQueryLength()).isEqualTo(200);
+        assertThat(searchProperties.getTimeout()).isEqualTo(Duration.ofSeconds(3));
+        assertThat(searchProperties.getMaxPageDepth()).isEqualTo(10000);
+        assertThat(searchProperties.getMaxQueryTerms()).isEqualTo(20);
+        assertThat(searchProperties.getMaxQueryPhrases()).isEqualTo(10);
+        assertThat(searchProperties.getSlowQueryThresholdMs()).isEqualTo(1000L);
 
         SearchProperties.Relevance relevance = searchProperties.getRelevance();
         assertThat(relevance.getTitleBoost()).isEqualTo(4.0);
@@ -45,15 +52,64 @@ class SearchPropertiesTest {
 
     @Test
     void validateProperties_validCustomConfig_succeeds() {
-        SearchProperties.Suggestions suggestions = searchProperties.getSuggestions();
-        suggestions.setEnabled(true);
-        suggestions.setMaxResults(15);
-        suggestions.setMinPrefixLength(3);
+        searchProperties.setTimeout(Duration.ofSeconds(5));
+        searchProperties.setMaxPageDepth(20000);
+        searchProperties.setMaxQueryTerms(30);
+        searchProperties.setMaxQueryPhrases(15);
+        searchProperties.setSlowQueryThresholdMs(2000L);
 
         searchProperties.validateProperties();
 
-        assertThat(suggestions.getMaxResults()).isEqualTo(15);
-        assertThat(suggestions.getMinPrefixLength()).isEqualTo(3);
+        assertThat(searchProperties.getTimeout()).isEqualTo(Duration.ofSeconds(5));
+        assertThat(searchProperties.getMaxPageDepth()).isEqualTo(20000);
+        assertThat(searchProperties.getMaxQueryTerms()).isEqualTo(30);
+        assertThat(searchProperties.getMaxQueryPhrases()).isEqualTo(15);
+        assertThat(searchProperties.getSlowQueryThresholdMs()).isEqualTo(2000L);
+    }
+
+    @Test
+    void validateProperties_invalidTimeout_throwsIllegalStateException() {
+        searchProperties.setTimeout(Duration.ZERO);
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Search timeout must be greater than 0");
+
+        searchProperties.setTimeout(null);
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Search timeout must be greater than 0");
+    }
+
+    @Test
+    void validateProperties_invalidMaxPageDepth_throwsIllegalStateException() {
+        searchProperties.setMaxPageDepth(0);
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Max page depth must be greater than 0");
+    }
+
+    @Test
+    void validateProperties_invalidMaxQueryTerms_throwsIllegalStateException() {
+        searchProperties.setMaxQueryTerms(0);
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Max query terms must be greater than 0");
+    }
+
+    @Test
+    void validateProperties_invalidMaxQueryPhrases_throwsIllegalStateException() {
+        searchProperties.setMaxQueryPhrases(0);
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Max query phrases must be greater than 0");
+    }
+
+    @Test
+    void validateProperties_invalidSlowQueryThreshold_throwsIllegalStateException() {
+        searchProperties.setSlowQueryThresholdMs(0);
+        assertThatThrownBy(() -> searchProperties.validateProperties())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Slow query threshold must be greater than 0");
     }
 
     @Test

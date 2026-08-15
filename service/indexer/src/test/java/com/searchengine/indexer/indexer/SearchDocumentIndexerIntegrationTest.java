@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBootTest
 @Tag("integration")
@@ -252,5 +253,10 @@ class SearchDocumentIndexerIntegrationTest {
         // 10g. Filter + Advanced Operator: advspring +advjava & language=en & contentType=text/html
         SearchResponse filterOpResp = searchService.search("advspring +advjava", "en", "text/html", 200, null, null, 0, 10, "relevance");
         assertThat(filterOpResp.results()).extracting("urlHash").contains("adv-a", "adv-c");
+
+        // 11. Test Feature 13 Deep Pagination Protection Rejection before sending request to ES
+        assertThatThrownBy(() -> searchService.search("advspring", 1001, 10, "relevance"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Requested page is too deep");
     }
 }

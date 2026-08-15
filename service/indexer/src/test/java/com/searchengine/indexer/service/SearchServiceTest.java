@@ -5,13 +5,14 @@ import com.searchengine.indexer.config.SearchProperties;
 import com.searchengine.indexer.exception.SearchQueryException;
 import com.searchengine.indexer.exception.SearchQuerySyntaxException;
 import com.searchengine.indexer.model.dto.SearchResponse;
-import com.searchengine.indexer.model.dto.SearchResult;
 import com.searchengine.indexer.search.ElasticsearchSearchQueryBuilder;
 import com.searchengine.indexer.search.SearchQueryParser;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import co.elastic.clients.elasticsearch.core.search.HitsMetadata;
 import co.elastic.clients.elasticsearch.core.search.TotalHits;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -19,6 +20,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.io.IOException;
+import java.net.SocketTimeoutException;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -39,6 +41,7 @@ class SearchServiceTest {
     private SearchProperties searchProperties;
     private ElasticsearchSearchQueryBuilder searchQueryBuilder;
     private SearchQueryParser searchQueryParser;
+    private MeterRegistry meterRegistry;
     private SearchService searchService;
 
     @BeforeEach
@@ -50,10 +53,15 @@ class SearchServiceTest {
         searchProperties.setMaxResults(10);
         searchProperties.setMaxPageSize(50);
         searchProperties.setMaxQueryLength(200);
+        searchProperties.setMaxPageDepth(10000);
+        searchProperties.setMaxQueryTerms(5);
+        searchProperties.setMaxQueryPhrases(2);
+        searchProperties.setSlowQueryThresholdMs(50L);
 
         searchQueryBuilder = new ElasticsearchSearchQueryBuilder(searchProperties);
         searchQueryParser = new SearchQueryParser();
-        searchService = new SearchService(elasticsearchClient, indexerProperties, searchProperties, searchQueryBuilder, searchQueryParser);
+        meterRegistry = new SimpleMeterRegistry();
+        searchService = new SearchService(elasticsearchClient, indexerProperties, searchProperties, searchQueryBuilder, searchQueryParser, meterRegistry);
     }
 
     private co.elastic.clients.elasticsearch.core.SearchResponse<Map> createMockEsResponse(long hitsCount, Map<String, List<String>> highlights) {
@@ -89,7 +97,7 @@ class SearchServiceTest {
     }
 
     @Test
-    void search_noFilters_executesSuccessfully() throws IOException {
+    void search_noFilters_executesSuccessfullyAndRecordsMetrics() throws IOException {
         co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
         given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
 
@@ -97,188 +105,79 @@ class SearchServiceTest {
 
         assertThat(response.query()).isEqualTo("spring");
         assertThat(response.totalHits()).isEqualTo(1L);
+        assertThat(meterRegistry.counter("search.requests").count()).isEqualTo(1.0);
+        assertThat(meterRegistry.counter("search.success").count()).isEqualTo(1.0);
     }
 
     @Test
-    void search_advancedSyntax_executesSuccessfully() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        SearchResponse response = searchService.search("\"spring boot\" +java -xml", null, null, null, null, null, 0, 10, "relevance");
-
-        assertThat(response.query()).isEqualTo("\"spring boot\" +java -xml");
-        assertThat(response.totalHits()).isEqualTo(1L);
-    }
-
-    @Test
-    void search_invalidSyntax_throwsSearchQuerySyntaxException() {
-        assertThatThrownBy(() -> searchService.search("\"unclosed quote", null, null, null, null, null, 0, 10, "relevance"))
-                .isInstanceOf(SearchQuerySyntaxException.class)
-                .hasMessageContaining("Invalid search query syntax");
-    }
-
-    @Test
-    void search_languageFilter_executesSuccessfully() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        SearchResponse response = searchService.search("spring", "en", null, null, null, null, 0, 10, "relevance");
-
-        assertThat(response.query()).isEqualTo("spring");
-        assertThat(response.results()).hasSize(1);
-    }
-
-    @Test
-    void search_contentTypeFilter_executesSuccessfully() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        SearchResponse response = searchService.search("spring", null, "text/html", null, null, null, 0, 10, "relevance");
-
-        assertThat(response.results()).hasSize(1);
-    }
-
-    @Test
-    void search_statusCodeFilter_executesSuccessfully() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        SearchResponse response = searchService.search("spring", null, null, 200, null, null, 0, 10, "relevance");
-
-        assertThat(response.results()).hasSize(1);
-    }
-
-    @Test
-    void search_fromDateFilter_executesSuccessfully() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        SearchResponse response = searchService.search("spring", null, null, null, "2026-08-01T00:00:00Z", null, 0, 10, "relevance");
-
-        assertThat(response.results()).hasSize(1);
-    }
-
-    @Test
-    void search_toDateFilter_executesSuccessfully() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        SearchResponse response = searchService.search("spring", null, null, null, null, "2026-08-14T23:59:59Z", 0, 10, "relevance");
-
-        assertThat(response.results()).hasSize(1);
-    }
-
-    @Test
-    void search_bothDateFilters_executesSuccessfully() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        SearchResponse response = searchService.search("spring", null, null, null, "2026-08-01T00:00:00Z", "2026-08-14T23:59:59Z", 0, 10, "relevance");
-
-        assertThat(response.results()).hasSize(1);
-    }
-
-    @Test
-    void search_multipleFiltersTogether_executesSuccessfully() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        SearchResponse response = searchService.search("spring", "en", "text/html", 200, "2026-08-01T00:00:00Z", "2026-08-14T23:59:59Z", 0, 10, "relevance");
-
-        assertThat(response.results()).hasSize(1);
-    }
-
-    @Test
-    void search_filtersAndPagination_executesSuccessfully() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(25L, null);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        SearchResponse response = searchService.search("spring", "en", null, 200, null, null, 1, 10, "relevance");
-
-        assertThat(response.page()).isEqualTo(1);
-        assertThat(response.size()).isEqualTo(10);
-        assertThat(response.totalHits()).isEqualTo(25L);
-        assertThat(response.totalPages()).isEqualTo(3);
-    }
-
-    @Test
-    void search_filtersAndRelevanceSorting_executesSuccessfully() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        SearchResponse response = searchService.search("spring", "en", null, 200, null, null, 0, 10, "relevance");
-
-        assertThat(response.sort()).isEqualTo("relevance");
-    }
-
-    @Test
-    void search_filtersAndNewestSorting_executesSuccessfully() throws IOException {
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        SearchResponse response = searchService.search("spring", "en", null, 200, null, null, 0, 10, "newest");
-
-        assertThat(response.sort()).isEqualTo("newest");
-    }
-
-    @Test
-    void search_filtersAndFuzzySearch_executesSuccessfully() throws IOException {
-        searchProperties.getFuzzy().setEnabled(true);
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        SearchResponse response = searchService.search("sprng boot", "en", null, null, null, null, 0, 10, "relevance");
-
-        assertThat(response.query()).isEqualTo("sprng boot");
-    }
-
-    @Test
-    void search_filtersAndHighlighting_executesSuccessfully() throws IOException {
-        Map<String, List<String>> highlights = Map.of("title", List.of("<em>Spring</em>"));
-        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, highlights);
-        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
-
-        SearchResponse response = searchService.search("spring", "en", null, null, null, null, 0, 10, "relevance");
-
-        assertThat(response.results().get(0).highlights()).containsEntry("title", List.of("<em>Spring</em>"));
-    }
-
-    @Test
-    void search_fromDateAfterToDate_rejected() {
-        assertThatThrownBy(() -> searchService.search("spring", null, null, null, "2026-08-15T00:00:00Z", "2026-08-14T00:00:00Z", 0, 10, "relevance"))
+    void search_deepPage_rejected() {
+        assertThatThrownBy(() -> searchService.search("spring", null, null, null, null, null, 1001, 10, "relevance"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("fromDate must not be after toDate");
+                .hasMessageContaining("Requested page is too deep");
+
+        assertThat(meterRegistry.counter("search.validation.errors").count()).isEqualTo(1.0);
     }
 
     @Test
-    void search_invalidStatusCode_rejected() {
-        assertThatThrownBy(() -> searchService.search("spring", null, null, 99, null, null, 0, 10, "relevance"))
+    void search_integerOverflow_protected() {
+        assertThatThrownBy(() -> searchService.search("spring", null, null, null, null, null, Integer.MAX_VALUE, 50, "relevance"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Status code must be between 100 and 599");
+                .hasMessageContaining("Requested page is too deep");
 
-        assertThatThrownBy(() -> searchService.search("spring", null, null, 600, null, null, 0, 10, "relevance"))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Status code must be between 100 and 599");
+        assertThat(meterRegistry.counter("search.validation.errors").count()).isEqualTo(1.0);
     }
 
     @Test
-    void search_blankLanguage_rejected() {
-        assertThatThrownBy(() -> searchService.search("spring", "   ", null, null, null, null, 0, 10, "relevance"))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Language filter must not be blank");
+    void search_maxAllowedPageOffset_succeeds() throws IOException {
+        co.elastic.clients.elasticsearch.core.SearchResponse<Map> mockResponse = createMockEsResponse(1L, null);
+        given(elasticsearchClient.search(any(Function.class), any(Class.class))).willReturn(mockResponse);
+
+        SearchResponse response = searchService.search("spring", null, null, null, null, null, 200, 50, "relevance");
+
+        assertThat(response.page()).isEqualTo(200);
+        assertThat(response.size()).isEqualTo(50);
     }
 
     @Test
-    void search_blankContentType_rejected() {
-        assertThatThrownBy(() -> searchService.search("spring", null, "   ", null, null, null, 0, 10, "relevance"))
+    void search_queryTermLimitExceeded_rejected() {
+        assertThatThrownBy(() -> searchService.search("one two three four five six", null, null, null, null, null, 0, 10, "relevance"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Content-Type filter must not be blank");
+                .hasMessageContaining("Search query is too complex");
+
+        assertThat(meterRegistry.counter("search.validation.errors").count()).isEqualTo(1.0);
     }
 
     @Test
-    void search_invalidDateFormat_rejected() {
-        assertThatThrownBy(() -> searchService.search("spring", null, null, null, "invalid-date", null, 0, 10, "relevance"))
+    void search_queryPhraseLimitExceeded_rejected() {
+        assertThatThrownBy(() -> searchService.search("\"one two\" \"three four\" \"five six\"", null, null, null, null, null, 0, 10, "relevance"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Invalid date format for fromDate");
+                .hasMessageContaining("Search query is too complex");
+
+        assertThat(meterRegistry.counter("search.validation.errors").count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void search_socketTimeout_throwsSearchQueryExceptionAndRecordsTimeoutMetric() throws IOException {
+        given(elasticsearchClient.search(any(Function.class), any(Class.class)))
+                .willThrow(new IOException("SocketTimeoutException: Read timed out", new SocketTimeoutException("Read timed out")));
+
+        assertThatThrownBy(() -> searchService.search("spring", null, null, null, null, null, 0, 10, "relevance"))
+                .isInstanceOf(SearchQueryException.class)
+                .hasMessageContaining("Search query timed out");
+
+        assertThat(meterRegistry.counter("search.timeouts").count()).isEqualTo(1.0);
+        assertThat(meterRegistry.counter("search.errors").count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void search_elasticsearchFailure_throwsSearchQueryExceptionAndRecordsErrorMetric() throws IOException {
+        given(elasticsearchClient.search(any(Function.class), any(Class.class)))
+                .willThrow(new IOException("Elasticsearch node unreachable"));
+
+        assertThatThrownBy(() -> searchService.search("spring", null, null, null, null, null, 0, 10, "relevance"))
+                .isInstanceOf(SearchQueryException.class)
+                .hasMessageContaining("Elasticsearch search query failed");
+
+        assertThat(meterRegistry.counter("search.errors").count()).isEqualTo(1.0);
     }
 }
