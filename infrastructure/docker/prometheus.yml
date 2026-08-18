@@ -2,6 +2,17 @@ global:
   scrape_interval: 5s
 
 scrape_configs:
-  - job_name: 'services'
+  - job_name: 'crawler'
+    metrics_path: '/actuator/prometheus'
     static_configs:
-      - targets: []
+      - targets: ['crawler:8081']
+
+  - job_name: 'content-processor'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['content-processor:8082']
+
+  - job_name: 'indexer'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['indexer:8083']

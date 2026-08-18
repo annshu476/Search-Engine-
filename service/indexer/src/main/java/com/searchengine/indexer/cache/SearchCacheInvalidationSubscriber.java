@@ -25,7 +25,6 @@ public class SearchCacheInvalidationSubscriber implements MessageListener {
     private final SearchCacheService searchCacheService;
     private final MeterRegistry meterRegistry;
     private final RedisConnectionFactory redisConnectionFactory;
-    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @PostConstruct
     public void init() {
