@@ -1,5 +1,6 @@
 package com.searchengine.contentprocessor.parser;
 
+import com.searchengine.contentprocessor.model.kafka.DiscoveredUrl;
 import com.searchengine.contentprocessor.model.kafka.RawHtmlDocument;
 import com.searchengine.contentprocessor.model.kafka.SearchDocument;
 import org.jsoup.Jsoup;
@@ -10,10 +11,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Parser component that converts a RawHtmlDocument into a structured SearchDocument using Jsoup.
@@ -181,5 +186,102 @@ public class HtmlDocumentParser {
         } else {
             return lang.toLowerCase();
         }
+    }
+
+    public List<DiscoveredUrl> extractDiscoveredLinks(RawHtmlDocument rawHtmlDocument) {
+        if (rawHtmlDocument == null || rawHtmlDocument.html() == null || rawHtmlDocument.html().isBlank()) {
+            return Collections.emptyList();
+        }
+        String sourceUrl = rawHtmlDocument.finalUrl() != null && !rawHtmlDocument.finalUrl().isBlank()
+                ? rawHtmlDocument.finalUrl()
+                : rawHtmlDocument.url();
+        if (sourceUrl == null || sourceUrl.isBlank()) {
+            return Collections.emptyList();
+        }
+
+        Document doc;
+        try {
+            doc = Jsoup.parse(rawHtmlDocument.html(), sourceUrl);
+        } catch (Exception e) {
+            LOGGER.warn("HTML_PARSER_LINK_EXTRACTION_ERROR sourceUrl=\"{}\" error=\"{}\"", sourceUrl, e.getMessage());
+            return Collections.emptyList();
+        }
+
+        return extractDiscoveredLinksFromDoc(doc, sourceUrl);
+    }
+
+    public List<DiscoveredUrl> extractDiscoveredLinksFromDoc(Document doc, String sourceUrl) {
+        if (doc == null || sourceUrl == null || sourceUrl.isBlank()) {
+            return Collections.emptyList();
+        }
+
+        Elements linkElements = doc.select("a[href]");
+        Set<String> seenOnPage = new LinkedHashSet<>();
+        List<DiscoveredUrl> discoveredUrls = new ArrayList<>();
+        Instant now = Instant.now();
+
+        for (Element linkEl : linkElements) {
+            try {
+                String rawHref = linkEl.attr("href").trim();
+                if (rawHref.isBlank()) {
+                    continue;
+                }
+
+                String lowerHref = rawHref.toLowerCase();
+                if (lowerHref.startsWith("javascript:") || lowerHref.startsWith("mailto:")
+                        || lowerHref.startsWith("tel:") || lowerHref.startsWith("data:")
+                        || lowerHref.startsWith("#")) {
+                    continue;
+                }
+
+                String absUrl = linkEl.absUrl("href").trim();
+                if (absUrl.isBlank()) {
+                    try {
+                        URI baseUri = new URI(sourceUrl);
+                        URI resolvedUri = baseUri.resolve(rawHref);
+                        absUrl = resolvedUri.toASCIIString();
+                    } catch (Exception ignored) {
+                        continue;
+                    }
+                }
+
+                if (absUrl.isBlank()) {
+                    continue;
+                }
+
+                int fragmentIdx = absUrl.indexOf('#');
+                if (fragmentIdx != -1) {
+                    absUrl = absUrl.substring(0, fragmentIdx);
+                }
+
+                if (absUrl.isBlank()) {
+                    continue;
+                }
+
+                URI parsedUri;
+                try {
+                    parsedUri = new URI(absUrl);
+                } catch (URISyntaxException e) {
+                    continue;
+                }
+
+                String scheme = parsedUri.getScheme();
+                if (scheme == null || (!scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https"))) {
+                    continue;
+                }
+
+                if (parsedUri.getHost() == null || parsedUri.getHost().isBlank()) {
+                    continue;
+                }
+
+                if (seenOnPage.add(absUrl)) {
+                    discoveredUrls.add(new DiscoveredUrl(absUrl, sourceUrl, now));
+                }
+            } catch (Exception e) {
+                LOGGER.debug("HTML_PARSER_LINK_SKIPPED sourceUrl=\"{}\" error=\"{}\"", sourceUrl, e.getMessage());
+            }
+        }
+
+        return discoveredUrls;
     }
 }

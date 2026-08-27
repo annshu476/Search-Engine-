@@ -36,6 +36,7 @@ content-processor:
   kafka:
     raw-html-topic: ${RAW_HTML_TOPIC:raw-html-topic}
     search-document-topic: ${SEARCH_DOCUMENT_TOPIC:search-document-topic}
+    discovered-urls-topic: ${DISCOVERED_URLS_TOPIC:discovered-urls-topic}
     publish-timeout: ${SEARCH_DOCUMENT_PUBLISH_TIMEOUT:3s}
 
 logging:

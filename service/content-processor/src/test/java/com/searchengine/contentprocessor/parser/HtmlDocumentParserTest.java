@@ -271,4 +271,48 @@ class HtmlDocumentParserTest {
     void test26_nullRawHtmlDocumentReturnsNull() {
         assertThat(parser.parse(null)).isNull();
     }
+
+    @Test
+    void test27_extractDiscoveredLinks_allRequirements() {
+        String html = """
+                <html>
+                <body>
+                    <a href="https://example.com/about">Absolute Link</a>
+                    <a href="/about">Relative Link</a>
+                    <a href="../products">Parent Relative Link</a>
+                    <a href="https://example.com/page#section">Fragment Link</a>
+                    <a href="javascript:void(0)">JS Link</a>
+                    <a href="mailto:test@example.com">Mailto Link</a>
+                    <a href="tel:+123456789">Tel Link</a>
+                    <a href="data:text/html;base64,123">Data Link</a>
+                    <a href="http://[invalid-host]:80">Invalid Host Link</a>
+                    <a href="https://external.org/deep/link">External Link</a>
+                    <a href="">Empty Link</a>
+                    <a href="https://example.com/about">Duplicate Link</a>
+                    <a href="ht%20tp://broken">Broken Link</a>
+                </body>
+                </html>
+                """;
+
+        RawHtmlDocument raw = createSampleRawDoc(html, "https://example.com/category/sub", "https://example.com/category/sub");
+        List<com.searchengine.contentprocessor.model.kafka.DiscoveredUrl> links = parser.extractDiscoveredLinks(raw);
+
+        List<String> urls = links.stream().map(com.searchengine.contentprocessor.model.kafka.DiscoveredUrl::url).toList();
+
+        assertThat(urls).contains(
+                "https://example.com/about",
+                "https://example.com/products",
+                "https://example.com/page",
+                "https://external.org/deep/link"
+        );
+
+        // Check non-web & malformed links are excluded
+        assertThat(urls).noneMatch(u -> u.contains("javascript:") || u.contains("mailto:") || u.contains("tel:") || u.contains("data:"));
+        assertThat(urls).noneMatch(u -> u.contains("#section"));
+        assertThat(urls).noneMatch(u -> u.contains("[invalid-host]"));
+
+        // Check page-level deduplication (https://example.com/about appears only once)
+        long countAbout = urls.stream().filter(u -> u.equals("https://example.com/about")).count();
+        assertThat(countAbout).isEqualTo(1);
+    }
 }

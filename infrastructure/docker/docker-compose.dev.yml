@@ -69,76 +69,11 @@ services:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
     ports:
       - "9090:9090"
-    depends_on:
-      - url-frontier
-      - crawler
-      - content-processor
-      - indexer
-
-  url-frontier:
-    build:
-      context: ../../service/url-frontier
-      dockerfile: Dockerfile
-    container_name: url-frontier
-    ports:
-      - "8080:8080"
-    environment:
-      - SERVER_PORT=8080
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - REDIS_HOST=redis
-    depends_on:
-      kafka:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  crawler:
-    build:
-      context: ../../service/crawler
-      dockerfile: Dockerfile
-    container_name: crawler
-    ports:
-      - "8081:8081"
-    environment:
-      - SERVER_PORT=8081
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-    depends_on:
-      kafka:
-        condition: service_healthy
-
-  content-processor:
-    build:
-      context: ../../service/content-processor
-      dockerfile: Dockerfile
-    container_name: content-processor
-    ports:
-      - "8082:8082"
-    environment:
-      - SERVER_PORT=8082
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-    depends_on:
-      kafka:
-        condition: service_healthy
-
-  indexer:
-    build:
-      context: ../../service/indexer
-      dockerfile: Dockerfile
-    container_name: indexer
-    ports:
-      - "8083:8083"
-    environment:
-      - SERVER_PORT=8083
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - ELASTICSEARCH_URL=http://elasticsearch:9200
-      - SEARCH_REDIS_HOST=redis
-    depends_on:
-      kafka:
-        condition: service_healthy
-      elasticsearch:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    extra_hosts:
+      - "url-frontier:host-gateway"
+      - "crawler:host-gateway"
+      - "content-processor:host-gateway"
+      - "indexer:host-gateway"
 
 volumes:
   zookeeper-data:

@@ -22,6 +22,17 @@ spring:
         request.timeout.ms: ${KAFKA_PRODUCER_REQUEST_TIMEOUT_MS:2000}
         delivery.timeout.ms: ${KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS:5000}
         max.block.ms: ${KAFKA_PRODUCER_MAX_BLOCK_MS:3000}
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP:url-frontier-group}
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.value.default.type: com.searchengine.urlfrontier.model.kafka.DiscoveredUrl
+        spring.json.trusted.packages: com.searchengine.urlfrontier.model.kafka,com.searchengine.contentprocessor.model.kafka
+        spring.json.use.type.headers: false
   lifecycle:
     timeout-per-shutdown-phase: 20s
 
@@ -31,6 +42,7 @@ application:
     url-task:
       topic: ${URL_TASK_TOPIC:url-topic}
       publish-timeout: ${URL_TASK_PUBLISH_TIMEOUT:3s}
+    discovered-urls-topic: ${DISCOVERED_URLS_TOPIC:discovered-urls-topic}
 
 logging:
   level:

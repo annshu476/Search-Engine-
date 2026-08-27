@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { getSearchSuggestions } from "@/lib/api/search";
+import { SeedUrlInput } from "@/components/SeedUrlInput";
 
 export default function Home() {
   const router = useRouter();
@@ -210,6 +211,9 @@ export default function Home() {
             </ul>
           )}
         </div>
+
+        {/* Seed Crawl Frontier Component */}
+        <SeedUrlInput />
 
         {/* Tech Stack Info */}
         <div className="flex flex-wrap justify-center items-center gap-4 text-xs font-mono text-zinc-600 pt-8 border-t border-zinc-900">

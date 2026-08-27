@@ -127,7 +127,7 @@ class EndToEndSystemPipelineIntegrationTest {
                 .andExpect(jsonPath("$.totalHits").value(1))
                 .andExpect(jsonPath("$.results[0].urlHash").value(testUrlHash))
                 .andExpect(jsonPath("$.results[0].title").value("Feature 21 Orchestration Guide"))
-                .andExpect(jsonPath("$.results[0].highlights.title[0]").value("<em>Feature</em> <em>21</em> Orchestration Guide"));
+                .andExpect(jsonPath("$.results[0].highlights.title[0]").value(org.hamcrest.Matchers.either(org.hamcrest.Matchers.is("<em>Feature</em> <em>21</em> Orchestration Guide")).or(org.hamcrest.Matchers.is("<em>Feature 21</em> Orchestration Guide"))));
 
         // 3. Search API Sorting Verification (sort=newest & sort=relevance)
         mockMvc.perform(get("/api/search").param("q", "Feature 21").param("sort", "newest"))

@@ -4,6 +4,7 @@ import com.searchengine.contentprocessor.exception.SearchDocumentPublishExceptio
 import com.searchengine.contentprocessor.model.kafka.RawHtmlDocument;
 import com.searchengine.contentprocessor.model.kafka.SearchDocument;
 import com.searchengine.contentprocessor.parser.HtmlDocumentParser;
+import com.searchengine.contentprocessor.producer.DiscoveredUrlProducer;
 import com.searchengine.contentprocessor.producer.SearchDocumentProducer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -26,6 +27,9 @@ class ContentProcessorServiceTest {
 
     @Mock
     private SearchDocumentProducer searchDocumentProducer;
+
+    @Mock
+    private DiscoveredUrlProducer discoveredUrlProducer;
 
     @InjectMocks
     private ContentProcessorService contentProcessorService;
